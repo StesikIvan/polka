@@ -106,13 +106,17 @@ const CFG_KEY = 'polka.sync';
 const GIST_FILE = 'polka.json';
 const TRASH_TTL = 90 * 24 * 3600 * 1000;   // надгробия старше трёх месяцев не нужны
 
-let cfg = loadCfg();
 let syncState = { busy: false, at: 0, error: null };
 
 function loadCfg() {
-  try { return JSON.parse(localStorage.getItem(CFG_KEY)) || {}; }
-  catch { return {}; }
+  try {
+    const c = JSON.parse(localStorage.getItem(CFG_KEY)) || {};
+    if (c.token) c.token = cleanToken(c.token);   // подчищаем то, что уже сохранено
+    return c;
+  } catch { return {}; }
 }
+
+let cfg = loadCfg();
 function saveCfg() { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); }
 
 const syncOn = () => !!(cfg.gistId);
@@ -128,7 +132,7 @@ function parseCode(code) {
     const raw = decodeURIComponent(escape(atob(code.trim())));
     const i = raw.indexOf(':');
     if (i < 0) return null;
-    const gistId = raw.slice(0, i), token = raw.slice(i + 1);
+    const gistId = cleanToken(raw.slice(0, i)), token = cleanToken(raw.slice(i + 1));
     return /^[0-9a-f]{16,}$/i.test(gistId) ? { gistId, token } : null;
   } catch { return null; }
 }
@@ -136,11 +140,19 @@ const inviteLink = () => `${location.origin}${location.pathname}#/connect/${make
 
 /* --- Чтение и запись gist --- */
 // Токен уезжает в HTTP-заголовок: любой лишний символ роняет fetch
-// невнятной ошибкой про ISO-8859-1. Лучше сказать по-человечески.
-const TOKEN_RE = /^[A-Za-z0-9_.-]+$/;
+// невнятной ошибкой про ISO-8859-1.
+// Невидимое (пробелы, неразрывный пробел, нулевой ширины, BOM) выбрасываем
+// молча — при копировании из веба оно цепляется само и человек не виноват.
+const cleanToken = t => String(t || '').replace(/[\s ​-‍﻿]/g, '');
+
 function checkToken(t) {
   if (!t) return null;
-  return TOKEN_RE.test(t) ? null : 'В токене посторонние символы — скопируй его заново';
+  const bad = [...t].find(ch => !/[A-Za-z0-9_.-]/.test(ch));
+  if (!bad) return null;
+  // Русская раскладка — главная ловушка: «с», «р», «а», «е» неотличимы на вид.
+  if (/[Ѐ-ӿ]/.test(bad))
+    return `В токене русская буква «${bad}» — вставь его заново копированием`;
+  return `В токене посторонний символ «${bad}» — вставь его заново`;
 }
 
 async function gistRead() {
@@ -1386,9 +1398,18 @@ function openSyncSetup() {
       <input type="text" id="sy-gist" value="${esc(cfg.gistId || DEFAULT_GIST)}" autocapitalize="off" spellcheck="false">
     </div>
 
+    ${cfg.token ? `<div class="hint" style="margin:0 16px 12px;color:var(--danger)">
+      Сейчас сохранён токен из ${cfg.token.length} ${plural(cfg.token.length, 'символа', 'символов', 'символов')}${
+        cfg.token.length !== 40 ? ' — у classic-токена GitHub их ровно 40, похоже он скопировался не целиком' : ''}.
+      ${esc(checkToken(cfg.token) || '')}
+    </div>` : ''}
+
     <div class="field">
       <div class="field-lbl">Токен GitHub</div>
       <input type="password" id="sy-token" placeholder="ghp_…" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <div class="hint" style="margin:8px 0 0">
+        Вставляй только копированием — вручную легко набрать русскую «с» вместо латинской.<br>
+      </div>
       <div class="hint" style="margin:8px 0 0">
         Создать: <b>github.com → Settings → Developer settings → Personal access tokens →
         Tokens (classic) → Generate new token</b>. Отметь <b>только</b> галочку <code>gist</code> —
@@ -1402,8 +1423,8 @@ function openSyncSetup() {
     </div>
   `, body => {
     const finish = async withToken => {
-      const gistId = $('#sy-gist', body).value.trim();
-      const token = withToken ? $('#sy-token', body).value.trim() : '';
+      const gistId = cleanToken($('#sy-gist', body).value);
+      const token = withToken ? cleanToken($('#sy-token', body).value) : '';
       if (!/^[0-9a-f]{16,}$/i.test(gistId)) { toast('Номер хранилища не похож на настоящий'); return; }
       if (withToken && !token) { toast('Вставь токен'); return; }
       const bad = checkToken(token);
