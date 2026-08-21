@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<title>Полка — где лежат настолки</title>
+<meta name="description" content="Каталог домашней коллекции настольных игр с картой хранения по квартире">
+<meta name="theme-color" content="#0e0f12" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f5f3" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Полка">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div id="app">
+  <!-- Sidebar (десктоп) -->
+  <nav id="sidebar" aria-label="Разделы">
+    <div class="sb-brand"><span class="sb-logo">🎲</span><span>Полка</span></div>
+    <a class="sb-item" href="#/collection" data-tab="collection"><span class="sb-ico">🗂️</span>Коллекция<span class="sb-count" id="sb-count-games"></span></a>
+    <a class="sb-item" href="#/home"       data-tab="home"><span class="sb-ico">🏠</span>Квартира<span class="sb-count" id="sb-count-places"></span></a>
+    <a class="sb-item" href="#/pick"       data-tab="pick"><span class="sb-ico">🎯</span>Что сыграть</a>
+    <a class="sb-item" href="#/settings"   data-tab="settings"><span class="sb-ico">⚙️</span>Настройки</a>
+    <button class="sb-add" id="sb-add">＋ Добавить игру</button>
+  </nav>
+
+  <!-- Основная область -->
+  <main id="main">
+    <div id="view" role="main"></div>
+  </main>
+
+  <!-- Таб-бар (телефон) -->
+  <nav id="tabbar" aria-label="Разделы">
+    <a class="tb-item" href="#/collection" data-tab="collection"><span class="tb-ico">🗂️</span><span class="tb-lbl">Коллекция</span></a>
+    <a class="tb-item" href="#/home"       data-tab="home"><span class="tb-ico">🏠</span><span class="tb-lbl">Квартира</span></a>
+    <button class="tb-fab" id="tb-add" aria-label="Добавить игру">＋</button>
+    <a class="tb-item" href="#/pick"       data-tab="pick"><span class="tb-ico">🎯</span><span class="tb-lbl">Что сыграть</span></a>
+    <a class="tb-item" href="#/settings"   data-tab="settings"><span class="tb-ico">⚙️</span><span class="tb-lbl">Ещё</span></a>
+  </nav>
+</div>
+
+<!-- Слой шторок -->
+<div id="sheet-layer" hidden>
+  <div id="sheet-scrim"></div>
+  <div id="sheet" role="dialog" aria-modal="true">
+    <div id="sheet-grab"></div>
+    <div id="sheet-body"></div>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
