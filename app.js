@@ -37,7 +37,7 @@ function toast(msg) {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 6';
+const BUILD = '2026-08-22 · 7';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -527,6 +527,53 @@ function fromTesera(t) {
   };
 }
 
+/* ============================================================
+   СВОИ ФОТОГРАФИИ
+
+   Снимок с телефона весит несколько мегабайт — в localStorage такое
+   не влезет, да и в общее хранилище каждый обмен гонять незачем.
+   Ужимаем до 600 точек по длинной стороне: для карточки хватает с запасом.
+   ============================================================ */
+const PHOTO_MAX = 600;
+const PHOTO_QUALITY = 0.72;
+
+function pickPhoto() {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/*';
+    inp.onchange = async () => {
+      const f = inp.files && inp.files[0];
+      if (!f) return resolve(null);
+      try { resolve(await shrinkPhoto(f)); }
+      catch (e) { console.error(e); toast('Не получилось прочитать снимок'); resolve(null); }
+    };
+    inp.click();
+  });
+}
+
+function shrinkPhoto(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const k = Math.min(1, PHOTO_MAX / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * k));
+      const h = Math.max(1, Math.round(img.height * k));
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff';           // под прозрачным PNG иначе будет чернота
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(c.toDataURL('image/jpeg', PHOTO_QUALITY));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('bad image')); };
+    img.src = url;
+  });
+}
+
 /* ---------- Шторка ---------- */
 const layer = $('#sheet-layer'), sheetBody = $('#sheet-body');
 let sheetStack = [];
@@ -607,10 +654,13 @@ function updateStuck() {
 }
 
 /* ---------- Коллекция ---------- */
-const cState = { q: '', tags: new Set(), sort: 'title' };
+const cState = { q: '', tags: new Set(), sort: 'title', kind: 'all' };
 
 function collectionList() {
   let list = S.games.slice();
+
+  if (cState.kind === 'game')  list = list.filter(g => g.kind !== 'thing');
+  if (cState.kind === 'thing') list = list.filter(g => g.kind === 'thing');
 
   if (cState.q.trim()) {
     const q = cState.q.trim().toLowerCase();
@@ -642,6 +692,11 @@ function viewCollection() {
       <input type="search" id="c-q" placeholder="Название, тег или место" value="${esc(cState.q)}"
              autocomplete="off" autocorrect="off" spellcheck="false">
     </div>
+    ${S.games.some(g => g.kind === 'thing') ? `<div class="chips scroll" style="padding-bottom:4px">
+      <button class="chip ${cState.kind === 'all' ? 'on' : ''}" data-kindf="all">Всё</button>
+      <button class="chip ${cState.kind === 'game' ? 'on' : ''}" data-kindf="game">🎲 Настолки</button>
+      <button class="chip ${cState.kind === 'thing' ? 'on' : ''}" data-kindf="thing">🎧 Другое</button>
+    </div>` : ''}
     <div class="chips scroll">
       <button class="chip ${cState.sort === 'title' ? 'on' : ''}" data-sort="title">А–Я</button>
       <button class="chip ${cState.sort === 'recent' ? 'on' : ''}" data-sort="recent">Новые</button>
@@ -665,7 +720,7 @@ function gridHtml(list, showWhere = true) {
 function gcard(g, showWhere = true, i = 0) {
   const art = g.photoUrl
     ? `<img src="${esc(thumb(g.photoUrl, 400))}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'gcard-ph',textContent:'🎲'}))">`
-    : `<div class="gcard-ph">🎲</div>`;
+    : `<div class="gcard-ph">${g.kind === 'thing' ? '🎧' : '🎲'}</div>`;
   return `
     <button class="gcard" data-game="${g.id}" style="animation-delay:${Math.min(i, 14) * 18}ms">
       <div class="gcard-art">
@@ -833,7 +888,8 @@ function playersFit(g, bucket) {
 
 function quizMatches(over = {}) {
   const a = { ...quiz, ...over };
-  let list = S.games.filter(g => !g.lentTo);
+  // Техника и аксессуары в подборе игры на вечер ни к чему.
+  let list = S.games.filter(g => !g.lentTo && g.kind !== 'thing');
   if (a.players) list = list.filter(g => playersFit(g, a.players));
   if (a.simple === 'easy') list = list.filter(g => complexityOf(g) === 0);
   if (a.simple === 'hard') list = list.filter(g => complexityOf(g) >= 1);
@@ -1081,11 +1137,16 @@ function openAddGame() {
     <div class="field">
       <input type="text" id="ag-q" placeholder="Начни вводить название…"
              autocomplete="off" autocorrect="off" spellcheck="false" autofocus>
+      <button class="btn ghost sm" id="ag-manual" style="margin-top:9px">✏️ Своя карточка — с фото и вручную</button>
+      <div class="hint" style="margin:8px 0 0">Для того, чего на Тесере нет: VR-очки, портативки, техника.</div>
     </div>
     <div id="ag-res" class="sh-pad" style="min-height:120px">
       <div class="hint" style="margin:12px 0">Ищем по базе tesera.ru — можно по-русски или по-английски.</div>
     </div>
   `, body => {
+    $('#ag-manual', body).addEventListener('click', () =>
+      openManualForm({ title: $('#ag-q', body).value.trim() }));
+
     const q = $('#ag-q', body), res = $('#ag-res', body);
     setTimeout(() => q.focus(), 250);
     q.addEventListener('input', () => {
@@ -1133,10 +1194,151 @@ function openAddGame() {
           toast('Не удалось загрузить карточку');
         }
       } else if (man) {
-        openGameForm({ ...fromTesera({}), title: man.dataset.manual });
+        openManualForm({ title: man.dataset.manual });
       }
     });
   });
+}
+
+/* ============================================================
+   ШТОРКА: карточка своими руками
+
+   Для того, чего на Тесере нет и не будет: VR-очки, портативки, техника,
+   самоделки, редкие издания. Отдельный вид «другое» нужен, чтобы такие
+   карточки не лезли в подбор «что сыграть».
+   ============================================================ */
+function openManualForm(preset = {}) {
+  const draft = {
+    ...fromTesera({}),
+    title: preset.title || '',
+    kind: 'game',
+    ...preset,
+  };
+
+  const draw = () => {
+    const isGame = draft.kind !== 'thing';
+    openSheet(`
+      ${sheetHead('Своя карточка')}
+
+      <div style="text-align:center;padding:2px 16px 14px">
+        ${draft.photoUrl
+          ? `<img class="gd-cover" src="${esc(draft.photoUrl)}" alt="" style="margin:0 auto">`
+          : `<div class="gd-cover gcard-ph" style="display:grid;margin:0 auto">${isGame ? '🎲' : '🎧'}</div>`}
+        <button class="btn ghost sm" id="mf-photo" style="max-width:230px;margin:12px auto 0">
+          ${draft.photoUrl ? '🔄 Заменить фото' : '📷 Сфотографировать'}
+        </button>
+      </div>
+
+      <div class="field">
+        <div class="field-lbl">Что это</div>
+        <div class="seg">
+          <button data-kind="game"  class="${isGame ? 'on' : ''}">Настолка</button>
+          <button data-kind="thing" class="${!isGame ? 'on' : ''}">Другое</button>
+        </div>
+        ${!isGame ? '<div class="hint" style="margin:8px 0 0">Техника, аксессуары, всё несыгровое. В подбор «что сыграть» не попадёт.</div>' : ''}
+      </div>
+
+      <div class="field">
+        <div class="field-lbl">Название</div>
+        <input type="text" id="mf-title" value="${esc(draft.title)}" placeholder="${isGame ? 'Название игры' : 'Meta Quest 3, Steam Deck…'}">
+      </div>
+
+      ${isGame ? `
+        <div class="field">
+          <div class="field-lbl">Игроков</div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <input type="number" id="mf-pmin" min="1" max="99" placeholder="от" value="${draft.playersMin || ''}" style="flex:1">
+            <span style="color:var(--tx-3)">—</span>
+            <input type="number" id="mf-pmax" min="1" max="99" placeholder="до" value="${draft.playersMax || ''}" style="flex:1">
+          </div>
+        </div>
+        <div class="field">
+          <div class="field-lbl">Партия, минут</div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <input type="number" id="mf-tmin" min="1" max="999" placeholder="от" value="${draft.playtimeMin || ''}" style="flex:1">
+            <span style="color:var(--tx-3)">—</span>
+            <input type="number" id="mf-tmax" min="1" max="999" placeholder="до" value="${draft.playtimeMax || ''}" style="flex:1">
+          </div>
+          <div class="hint" style="margin:8px 0 0">Можно пропустить — тогда игра не попадёт в подбор по времени.</div>
+        </div>
+      ` : ''}
+
+      <div class="field">
+        <div class="field-lbl">Где лежит</div>
+        <button class="btn ghost sm" id="mf-place" style="justify-content:space-between;padding:0 14px">
+          <span>${draft.placeId && place(draft.placeId) ? esc(pathStr(draft.placeId)) : 'Выбрать место'}</span><span>›</span>
+        </button>
+      </div>
+
+      <div class="field">
+        <div class="field-lbl">Теги</div>
+        <div class="chips" id="mf-tags">
+          ${[...new Set([...allTags(), ...(isGame ? PRESET_TAGS : []), ...draft.tags])]
+            .map(t => `<button class="chip ${draft.tags.includes(t) ? 'on' : ''}" data-t="${esc(t)}">${esc(t)}</button>`).join('')}
+        </div>
+        <input type="text" id="mf-newtag" placeholder="+ свой тег и Enter" style="margin-top:9px">
+      </div>
+
+      <div class="field">
+        <div class="field-lbl">Описание</div>
+        <textarea id="mf-note" placeholder="${isGame ? 'Чем хороша, что докупить' : 'Комплектация, что где лежит, чего не хватает'}">${esc(draft.note || '')}</textarea>
+      </div>
+
+      <div class="sh-actions">
+        <button class="btn" id="mf-save">Добавить в коллекцию</button>
+      </div>
+    `, body => {
+      const capture = () => {
+        draft.title = $('#mf-title', body).value.trim();
+        draft.note = $('#mf-note', body).value.trim();
+        if (isGame) {
+          const n = sel => { const v = parseInt($(sel, body).value, 10); return Number.isFinite(v) && v > 0 ? v : null; };
+          draft.playersMin = n('#mf-pmin');  draft.playersMax = n('#mf-pmax');
+          draft.playtimeMin = n('#mf-tmin'); draft.playtimeMax = n('#mf-tmax');
+        }
+      };
+
+      $$('[data-kind]', body).forEach(b => b.addEventListener('click', () => {
+        capture(); draft.kind = b.dataset.kind; draw();
+      }));
+
+      $('#mf-photo', body).addEventListener('click', async () => {
+        capture();
+        const data = await pickPhoto();
+        if (data) { draft.photoUrl = data; draw(); }
+      });
+
+      $('#mf-place', body).addEventListener('click', () => {
+        capture();
+        openPlacePicker(pid => { draft.placeId = pid; draw(); });
+      });
+
+      $('#mf-tags', body).addEventListener('click', e => {
+        const c = e.target.closest('[data-t]'); if (!c) return;
+        const i = draft.tags.indexOf(c.dataset.t);
+        i >= 0 ? draft.tags.splice(i, 1) : draft.tags.push(c.dataset.t);
+        c.classList.toggle('on');
+      });
+
+      $('#mf-newtag', body).addEventListener('keydown', e => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const t = e.target.value.trim().toLowerCase(); if (!t) return;
+        if (!draft.tags.includes(t)) draft.tags.push(t);
+        e.target.value = '';
+        capture(); draw();
+      });
+
+      $('#mf-save', body).addEventListener('click', () => {
+        capture();
+        if (!draft.title) { toast('Без названия не сохранить'); $('#mf-title', body).focus(); return; }
+        saveGame(draft);
+        closeSheet(); render();
+        toast(`«${draft.title}» добавлена`);
+      });
+    });
+  };
+  draw();
 }
 
 /* ---------- Форма новой игры ---------- */
@@ -1305,22 +1507,45 @@ function openPlaceGames(placeId) {
   const chosen = new Set(S.games.filter(g => g.placeId === placeId).map(g => g.id));
   let q = '';
 
-  // Сначала бесхозные — ради них всё и затевалось, потом здешние, потом чужие.
-  const rank = g => g.placeId === placeId ? 1 : (!g.placeId || !place(g.placeId)) ? 0 : 2;
-
   const draw = () => {
     const needle = q.trim().toLowerCase();
     const list = S.games
       .filter(g => !needle || (g.title || '').toLowerCase().includes(needle)
                            || (g.titleOrig || '').toLowerCase().includes(needle))
-      .sort((a, b) => rank(a) - rank(b) || collator.compare(a.title, b.title));
+      .sort((a, b) => collator.compare(a.title, b.title));
 
-    const homeless = S.games.filter(g => !g.placeId || !place(g.placeId)).length;
+    const unplaced = g => !g.placeId || !place(g.placeId);
+
+    // Раскладывая полку, ищешь среди бесхозных — они и должны идти отдельно,
+    // а не тонуть в общем списке рядом с уже разложенными.
+    const groups = [
+      { title: 'Без места',        items: list.filter(unplaced) },
+      { title: 'Лежат здесь',      items: list.filter(g => g.placeId === placeId) },
+      { title: 'В других местах',  items: list.filter(g => !unplaced(g) && g.placeId !== placeId) },
+    ].filter(gr => gr.items.length);
+
+    const row = g => {
+      const on = chosen.has(g.id);
+      const where = g.placeId === placeId ? 'здесь'
+                  : unplaced(g) ? 'ещё не разложена'
+                  : pathStr(g.placeId);
+      return `<button class="row" data-pg="${g.id}" style="${on ? '' : 'opacity:.55'}">
+        ${g.photoUrl ? `<img class="row-thumb" src="${esc(thumb(g.photoUrl, 200))}" alt="" loading="lazy">`
+                     : `<span class="row-ico" style="width:42px;height:42px">${g.kind === 'thing' ? '🎧' : '🎲'}</span>`}
+        <span class="row-main">
+          <span class="row-title">${esc(g.title)}</span>
+          <span class="row-sub">${esc(where)}</span>
+        </span>
+        <span class="row-chev" style="${on ? 'color:var(--accent);opacity:1' : ''}">${on ? '✓' : '○'}</span>
+      </button>`;
+    };
+
+    const homeless = S.games.filter(unplaced).length;
 
     openSheet(`
       ${sheetHead(`${p.icon} ${p.name}`)}
       <div class="hint" style="margin:-4px 16px 12px">
-        Отметь коробки, которые здесь стоят.${homeless ? ` Без места сейчас ${homeless}.` : ''}
+        Отметь, что здесь лежит.${homeless ? ` Без места сейчас ${homeless}.` : ''}
       </div>
 
       <div class="field">
@@ -1328,21 +1553,10 @@ function openPlaceGames(placeId) {
                autocomplete="off" autocapitalize="off" spellcheck="false">
       </div>
 
-      ${list.length ? `<div class="list">${list.map(g => {
-        const on = chosen.has(g.id);
-        const where = g.placeId === placeId ? 'здесь'
-                    : (!g.placeId || !place(g.placeId)) ? 'без места'
-                    : pathStr(g.placeId);
-        return `<button class="row" data-pg="${g.id}" style="${on ? '' : 'opacity:.55'}">
-          ${g.photoUrl ? `<img class="row-thumb" src="${esc(thumb(g.photoUrl, 200))}" alt="" loading="lazy">`
-                       : `<span class="row-ico" style="width:42px;height:42px">🎲</span>`}
-          <span class="row-main">
-            <span class="row-title">${esc(g.title)}</span>
-            <span class="row-sub">${esc(where)}</span>
-          </span>
-          <span class="row-chev" style="${on ? 'color:var(--accent);opacity:1' : ''}">${on ? '✓' : '○'}</span>
-        </button>`;
-      }).join('')}</div>` : `<div class="hint" style="margin:4px 16px">Ничего не нашлось.</div>`}
+      ${groups.length ? groups.map(gr => `
+        <div class="sect-title" style="margin-left:16px">${gr.title} · ${gr.items.length}</div>
+        <div class="list">${gr.items.map(row).join('')}</div>
+      `).join('') : `<div class="hint" style="margin:4px 16px">Ничего не нашлось.</div>`}
 
       <div class="sh-actions">
         <button class="btn" data-pg-save>Готово · отмечено ${chosen.size}</button>
@@ -1848,6 +2062,9 @@ document.addEventListener('click', async e => {
   // Фильтры коллекции
   const sortBtn = t.closest('[data-sort]');
   if (sortBtn) { cState.sort = sortBtn.dataset.sort; render(); return; }
+
+  const kindBtn = t.closest('[data-kindf]');
+  if (kindBtn) { cState.kind = kindBtn.dataset.kindf; render(); return; }
 
   const tagBtn = t.closest('[data-tag]');
   if (tagBtn) {
