@@ -138,6 +138,15 @@ function parseCode(code) {
 }
 const inviteLink = () => `${location.origin}${location.pathname}#/connect/${makeCode()}`;
 
+// Приложение с домашнего экрана на iOS живёт в своём хранилище, отдельном
+// от Safari, и ссылка-приглашение туда не долетает. Поэтому код нужно уметь
+// принимать вставкой — хоть ссылкой целиком, хоть голым кодом.
+function parseInvite(text) {
+  const s = String(text || '').trim();
+  const m = s.match(/#\/connect\/([A-Za-z0-9+/=_-]+)/);
+  return parseCode(m ? m[1] : s);
+}
+
 /* --- Чтение и запись gist --- */
 // Токен уезжает в HTTP-заголовок: любой лишний символ роняет fetch
 // невнятной ошибкой про ISO-8859-1.
@@ -670,6 +679,7 @@ function emptyStart() {
     <div class="empty-title">Пока пусто</div>
     <div class="empty-text">Добавь первую игру — название подтянется с Tesera вместе с обложкой, числом игроков и временем партии.</div>
     <button class="btn" data-act="add-game">＋ Добавить игру</button>
+    ${syncOn() ? '' : `<button class="btn ghost" data-act="sync-setup" style="margin-top:10px">У меня уже есть коллекция</button>`}
     <button class="btn ghost" data-act="demo" style="margin-top:10px">Заполнить примером</button>
   </div>`;
 }
@@ -1387,9 +1397,23 @@ const DEFAULT_GIST = '43ad041b1c71cdc85b5f760e69d18b77';
 function openSyncSetup() {
   openSheet(`
     ${sheetHead('Синхронизация')}
-    <div class="hint" style="margin:-4px 16px 14px">
-      Коллекция будет лежать в секретном gist на GitHub — это бесплатно и без сервера.
-      Читать его можно по номеру, а вот записывать — только с твоим токеном.
+
+    <div class="field">
+      <div class="field-lbl">Есть ссылка-приглашение?</div>
+      <textarea id="sy-invite" placeholder="Вставь сюда ссылку с другого устройства"
+                style="min-height:70px;font-size:13px" autocapitalize="off" spellcheck="false"></textarea>
+      <button class="btn sm" id="sy-join" style="margin-top:9px">Подключиться по ссылке</button>
+      <div class="hint" style="margin:8px 0 0">
+        Так подключается второй телефон. На iOS приложение с домашнего экрана
+        не видит того, что осталось в Safari, — код нужно перенести вставкой.
+      </div>
+    </div>
+
+    <div class="sect-title" style="margin-left:16px">Или настроить вручную</div>
+
+    <div class="hint" style="margin:0 16px 14px">
+      Коллекция лежит в секретном gist на GitHub — бесплатно и без сервера.
+      Читать его можно по номеру, а записывать — только с твоим токеном.
       Токен хранится на устройстве и никуда, кроме api.github.com, не уходит.
     </div>
 
@@ -1438,6 +1462,16 @@ function openSyncSetup() {
     };
     $('#sy-ok', body).addEventListener('click', () => finish(true));
     $('#sy-ro', body).addEventListener('click', () => finish(false));
+
+    $('#sy-join', body).addEventListener('click', async () => {
+      const parsed = parseInvite($('#sy-invite', body).value);
+      if (!parsed) { toast('Ссылка не разобралась — скопируй её целиком'); return; }
+      cfg = { ...cfg, ...parsed };
+      saveCfg();
+      closeSheet();
+      await syncNow();
+      render();
+    });
   });
 }
 
