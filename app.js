@@ -37,7 +37,7 @@ function toast(msg) {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 7';
+const BUILD = '2026-08-22 · 9';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -654,13 +654,18 @@ function updateStuck() {
 }
 
 /* ---------- Коллекция ---------- */
-const cState = { q: '', tags: new Set(), sort: 'title', kind: 'all' };
+// По умолчанию показываем настолки: техника в общей сетке — это шум,
+// ради которого коллекцию не открывают. Пока несыгрового нет, фильтр
+// ничего не отсекает и кнопок не показывает.
+const cState = { q: '', tags: new Set(), sort: 'title', kind: 'game' };
 
 function collectionList() {
   let list = S.games.slice();
 
-  if (cState.kind === 'game')  list = list.filter(g => g.kind !== 'thing');
-  if (cState.kind === 'thing') list = list.filter(g => g.kind === 'thing');
+  // Поиск идёт по всему: набрал «quest» — нашёл очки, даже если открыты настолки.
+  const searching = !!cState.q.trim();
+  if (!searching && cState.kind === 'game')  list = list.filter(g => g.kind !== 'thing');
+  if (!searching && cState.kind === 'thing') list = list.filter(g => g.kind === 'thing');
 
   if (cState.q.trim()) {
     const q = cState.q.trim().toLowerCase();
@@ -686,16 +691,23 @@ function viewCollection() {
 
   if (!S.games.length) return header('Коллекция', '') + emptyStart();
 
-  return header('Коллекция', `${S.games.length} ${plural(S.games.length, 'игра', 'игры', 'игр')}`, null, null,
+  const nThings = S.games.filter(g => g.kind === 'thing').length;
+  const nGames = S.games.length - nThings;
+  // Считаем раздельно: «5 игр» над сеткой из трёх коробок сбивает с толку.
+  const sub = nThings
+    ? `${nGames} ${plural(nGames, 'настолка', 'настолки', 'настолок')} · ${nThings} ${plural(nThings, 'другое', 'других', 'других')}`
+    : `${nGames} ${plural(nGames, 'игра', 'игры', 'игр')}`;
+
+  return header('Коллекция', sub, null, null,
     `<button class="hdr-btn" data-act="random-any" aria-label="Случайная игра" title="Случайная игра">🎲</button>`) + `
     <div class="searchbar">
       <input type="search" id="c-q" placeholder="Название, тег или место" value="${esc(cState.q)}"
              autocomplete="off" autocorrect="off" spellcheck="false">
     </div>
-    ${S.games.some(g => g.kind === 'thing') ? `<div class="chips scroll" style="padding-bottom:4px">
-      <button class="chip ${cState.kind === 'all' ? 'on' : ''}" data-kindf="all">Всё</button>
+    ${(!cState.q.trim() && S.games.some(g => g.kind === 'thing')) ? `<div class="chips scroll" style="padding-bottom:4px">
       <button class="chip ${cState.kind === 'game' ? 'on' : ''}" data-kindf="game">🎲 Настолки</button>
-      <button class="chip ${cState.kind === 'thing' ? 'on' : ''}" data-kindf="thing">🎧 Другое</button>
+      <button class="chip ${cState.kind === 'thing' ? 'on' : ''}" data-kindf="thing">🎧 Другое · ${S.games.filter(g => g.kind === 'thing').length}</button>
+      <button class="chip ${cState.kind === 'all' ? 'on' : ''}" data-kindf="all">Всё вместе</button>
     </div>` : ''}
     <div class="chips scroll">
       <button class="chip ${cState.sort === 'title' ? 'on' : ''}" data-sort="title">А–Я</button>
@@ -1333,6 +1345,9 @@ function openManualForm(preset = {}) {
         capture();
         if (!draft.title) { toast('Без названия не сохранить'); $('#mf-title', body).focus(); return; }
         saveGame(draft);
+        // Иначе техника пропадёт из виду сразу после сохранения: коллекция
+        // по умолчанию открыта на настолках.
+        cState.kind = draft.kind === 'thing' ? 'thing' : 'game';
         closeSheet(); render();
         toast(`«${draft.title}» добавлена`);
       });
