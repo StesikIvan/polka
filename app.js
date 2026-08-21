@@ -135,6 +135,53 @@ function removeGame(id) {
   save();
 }
 
+/* ============================================================
+   НАСТРОЕНИЕ ИГРЫ
+
+   Категории выводятся из данных Тесеры, а не спрашиваются у человека:
+   грузить вопросами при добавлении игры — верный способ бросить каталог
+   на пятой коробке. Если автомат ошибся, в карточке игры можно
+   перещёлкнуть вручную — своя пометка всегда важнее вычисленной.
+   ============================================================ */
+const VIBES = [
+  { id: 'family', icon: '👨‍👩‍👧', label: 'Всей семьёй',      sub: 'С детьми, правила за пять минут' },
+  { id: 'brains', icon: '🧠',      label: 'Битва умов',       sub: 'Сесть и думать, вдвоём-вчетвером' },
+  { id: 'geek',   icon: '🐙',      label: 'Гик-тусовка',      sub: 'Свои люди, толстая коробка не пугает' },
+  { id: 'crowd',  icon: '🎉',      label: 'Большой компанией', sub: 'Пятеро и больше' },
+  { id: 'party',  icon: '🍻',      label: 'Пьянка',           sub: 'Шумно, быстро, без правил на двадцать страниц' },
+];
+const vibe = id => VIBES.find(v => v.id === id);
+
+// 0 — лёгкая, 1 — средняя, 2 — тяжёлая
+function complexityOf(g) {
+  const learn = g.timeToLearn || 0;
+  if (learn) return learn <= 7 ? 0 : learn <= 20 ? 1 : 2;
+  const t = g.playtimeMax || g.playtimeMin || 0;   // старые карточки без timeToLearn
+  if (!t) return 1;
+  return t <= 30 ? 0 : t <= 90 ? 1 : 2;
+}
+const COMPLEXITY_LABEL = ['лёгкая', 'средняя', 'тяжёлая'];
+
+function autoVibes(g) {
+  const c = complexityOf(g);
+  const age = g.ageMin || 0;
+  const maxP = g.playersMax || 0;
+  const t = g.playtimeMax || g.playtimeMin || 0;
+  const out = new Set();
+
+  if (age && age <= 10 && c <= 1) out.add('family');
+  if (c >= 1 && maxP && maxP <= 5) out.add('brains');
+  if (c >= 2) out.add('geek');
+  if (maxP >= 6) out.add('crowd');
+  if (maxP >= 5 && c === 0 && t && t <= 30) { out.add('party'); out.add('crowd'); }
+
+  if (!out.size) out.add(c >= 2 ? 'geek' : 'brains');
+  return [...out];
+}
+
+const vibesOf = g => (g.vibes && g.vibes.length) ? g.vibes : autoVibes(g);
+const vibeIsManual = g => !!(g.vibes && g.vibes.length);
+
 /* ---------- Форматирование ---------- */
 // Tesera отдаёт превью нужного размера, если вставить его в путь.
 // Полноразмерные обложки весят под мегабайт — в сетке они не нужны.
@@ -225,10 +272,12 @@ function fromTesera(t) {
     year: t.year || null,
     playersMin: t.playersMin || null,
     playersMax: t.playersMax || null,
-    playersRec: t.playersMaxRecommend || null,
+    playersRecMin: t.playersMinRecommend || null,
+    playersRecMax: t.playersMaxRecommend || null,
     ageMin: t.playersAgeMin || null,
     playtimeMin: t.playtimeMin || null,
     playtimeMax: t.playtimeMax || null,
+    timeToLearn: t.timeToLearn || null,   // минуты на объяснение правил — главный признак сложности
     rating: t.bggGeekRating || t.ratingUser || null,
     tags: [],
     placeId: null,
@@ -315,8 +364,7 @@ function updateStuck() {
 /* ---------- Коллекция ---------- */
 const cState = { q: '', tags: new Set(), sort: 'title' };
 
-function viewCollection() {
-  const tags = allTags();
+function collectionList() {
   let list = S.games.slice();
 
   if (cState.q.trim()) {
@@ -334,11 +382,17 @@ function viewCollection() {
     recent: (a, b) => (b.addedAt || 0) - (a.addedAt || 0),
     rating: (a, b) => (b.rating || 0) - (a.rating || 0),
   };
-  list.sort(sorters[cState.sort]);
+  return list.sort(sorters[cState.sort]);
+}
+
+function viewCollection() {
+  const tags = allTags();
+  const list = collectionList();
 
   if (!S.games.length) return header('Коллекция', '') + emptyStart();
 
-  return header('Коллекция', `${S.games.length} ${plural(S.games.length, 'игра', 'игры', 'игр')}`) + `
+  return header('Коллекция', `${S.games.length} ${plural(S.games.length, 'игра', 'игры', 'игр')}`, null, null,
+    `<button class="hdr-btn" data-act="random-any" aria-label="Случайная игра" title="Случайная игра">🎲</button>`) + `
     <div class="searchbar">
       <input type="search" id="c-q" placeholder="Название, тег или место" value="${esc(cState.q)}"
              autocomplete="off" autocorrect="off" spellcheck="false">
@@ -379,10 +433,10 @@ function gcard(g, showWhere = true, i = 0) {
     </button>`;
 }
 
-function header(title, sub, backHref, backLabel) {
+function header(title, sub, backHref, backLabel, actions = '') {
   return `<div class="hdr">
     ${backHref ? `<a class="back-btn" href="${backHref}"><span class="chev">‹</span>${esc(backLabel || 'Назад')}</a>` : ''}
-    <div class="hdr-row"><h1 class="hdr-title">${esc(title)}</h1></div>
+    <div class="hdr-row"><h1 class="hdr-title">${esc(title)}</h1>${actions}</div>
     ${sub ? `<div class="hdr-sub">${esc(sub)}</div>` : ''}
   </div>`;
 }
@@ -502,66 +556,127 @@ function viewPlace(id) {
   `;
 }
 
-/* ---------- Что сыграть ---------- */
-const pState = { players: 0, time: 0, tags: new Set() };
+/* ============================================================
+   Что сыграть — тест из трёх вопросов
 
-function pickMatches() {
-  let list = S.games.filter(g => !g.lentTo);
-  if (pState.players) {
-    const n = pState.players;
-    list = list.filter(g => {
-      if (!g.playersMin && !g.playersMax) return false;
-      const lo = g.playersMin || 1, hi = g.playersMax || lo;
-      return n >= lo && (n <= hi || (n === 6 && hi >= 6));
-    });
-  }
-  if (pState.time) {
-    const lim = pState.time;
-    list = list.filter(g => {
-      const t = g.playtimeMax || g.playtimeMin;
-      if (!t) return false;
-      return lim === 999 ? t > 120 : t <= lim;
-    });
-  }
-  if (pState.tags.size) list = list.filter(g => [...pState.tags].every(t => (g.tags || []).includes(t)));
-  return list.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+   Логика та же, что на схеме GaGa: сколько вас → простое или нет →
+   что хотите устроить. На каждом варианте показываем, сколько игр за ним
+   стоит: тупиков вида «под эти условия ничего нет» быть не должно.
+   ============================================================ */
+const quiz = { step: 0, players: null, simple: null, vibe: null, tags: new Set() };
+
+const PLAYER_BUCKETS = [
+  { v: '1',   label: 'Один',    sub: 'Соло-режим' },
+  { v: '2',   label: 'Вдвоём',  sub: '' },
+  { v: '3-4', label: 'Трое-четверо', sub: '' },
+  { v: '5+',  label: 'Пятеро и больше', sub: '' },
+];
+
+function playersFit(g, bucket) {
+  const lo = g.playersMin || 1;
+  const hi = g.playersMax || lo;
+  if (bucket === '5+') return hi >= 5;
+  if (bucket === '3-4') return lo <= 4 && hi >= 3;
+  const n = +bucket;
+  return lo <= n && hi >= n;
 }
 
+function quizMatches(over = {}) {
+  const a = { ...quiz, ...over };
+  let list = S.games.filter(g => !g.lentTo);
+  if (a.players) list = list.filter(g => playersFit(g, a.players));
+  if (a.simple === 'easy') list = list.filter(g => complexityOf(g) === 0);
+  if (a.simple === 'hard') list = list.filter(g => complexityOf(g) >= 1);
+  if (a.vibe && a.vibe !== 'any') list = list.filter(g => vibesOf(g).includes(a.vibe));
+  if (a.tags && a.tags.size) list = list.filter(g => [...a.tags].every(t => (g.tags || []).includes(t)));
+  return list.sort((x, y) => (y.rating || 0) - (x.rating || 0));
+}
+
+const qopt = (q, v, icon, title, sub, n, big) => `
+  <button class="qopt${big ? ' big' : ''}" data-q="${q}" data-v="${esc(v)}" ${n === 0 ? 'disabled' : ''}>
+    ${icon ? `<span class="qopt-ico">${icon}</span>` : ''}
+    <span class="qopt-main">
+      <span class="qopt-t">${esc(title)}</span>
+      ${sub ? `<span class="qopt-s">${esc(sub)}</span>` : ''}
+    </span>
+    <span class="qopt-n">${n}</span>
+  </button>`;
+
 function viewPick() {
+  if (!S.games.length) {
+    return header('Что сыграть', '') + `<div class="empty">
+      <div class="empty-ico">🎯</div>
+      <div class="empty-title">Сначала нужна коллекция</div>
+      <div class="empty-text">Добавь игры — и здесь появится подбор под компанию и настроение.</div>
+      <button class="btn" data-act="add-game">＋ Добавить игру</button>
+    </div>`;
+  }
+
+  const dots = n => `<div class="qdots">${[0, 1, 2].map(i =>
+    `<span class="qdot ${i === n ? 'on' : ''}"></span>`).join('')}</div>`;
+
+  /* --- Шаг 1: сколько игроков --- */
+  if (quiz.step === 0) {
+    return header('Что сыграть', 'Три вопроса — и коробка на столе') + dots(0) + `
+      <div class="qhead">Сколько вас будет?</div>
+      <div class="pad">
+        ${PLAYER_BUCKETS.map(b => qopt('players', b.v, '', b.label, b.sub,
+            quizMatches({ players: b.v, simple: null, vibe: null }).length, true)).join('')}
+      </div>`;
+  }
+
+  /* --- Шаг 2: простое или нет --- */
+  if (quiz.step === 1) {
+    const c = v => quizMatches({ simple: v, vibe: null }).length;
+    return header('Что сыграть', '', null, null, '') + dots(1) + `
+      <div class="qback"><button class="back-btn" data-q-back><span class="chev">‹</span>Назад</button></div>
+      <div class="qhead">Что-нибудь простое?</div>
+      <div class="pad">
+        ${qopt('simple', 'easy', '🌤', 'Да, полегче', 'Правила объясняются за пять минут', c('easy'))}
+        ${qopt('simple', 'hard', '🌩', 'Нет, можно посложнее', 'Готовы вникать', c('hard'))}
+        ${qopt('simple', 'any', '🤷', 'Неважно', '', c('any'))}
+      </div>`;
+  }
+
+  /* --- Шаг 3: что хотите устроить --- */
+  if (quiz.step === 2) {
+    const c = v => quizMatches({ vibe: v }).length;
+    return header('Что сыграть', '', null, null, '') + dots(2) + `
+      <div class="qback"><button class="back-btn" data-q-back><span class="chev">‹</span>Назад</button></div>
+      <div class="qhead">Что хотите устроить?</div>
+      <div class="pad">
+        ${VIBES.map(v => qopt('vibe', v.id, v.icon, v.label, v.sub, c(v.id))).join('')}
+        ${qopt('vibe', 'any', '🤷', 'Неважно', '', c('any'))}
+      </div>`;
+  }
+
+  /* --- Результат --- */
+  const list = quizMatches();
   const tags = allTags();
-  const list = pickMatches();
-  const P = [1, 2, 3, 4, 5, 6];
-  const T = [[30, 'до 30′'], [60, 'до часа'], [120, 'до 2 ч'], [999, 'дольше']];
+  const answers = [
+    PLAYER_BUCKETS.find(b => b.v === quiz.players)?.label,
+    quiz.simple === 'easy' ? 'попроще' : quiz.simple === 'hard' ? 'посложнее' : null,
+    quiz.vibe && quiz.vibe !== 'any' ? vibe(quiz.vibe).label.toLowerCase() : null,
+  ].filter(Boolean);
 
-  return header('Что сыграть', 'Подбор по составу и времени') + `
-    <div class="sect-title">Сколько игроков</div>
-    <div class="chips scroll">
-      <button class="chip ${!pState.players ? 'on' : ''}" data-pl="0">Неважно</button>
-      ${P.map(n => `<button class="chip ${pState.players === n ? 'on' : ''}" data-pl="${n}">${n}${n === 6 ? '+' : ''}</button>`).join('')}
-    </div>
+  return header('Что сыграть', answers.join(' · ') || 'Без условий', null, null,
+    `<button class="hdr-btn" data-q-reset aria-label="Пройти заново" title="Пройти заново">↺</button>`) + `
 
-    <div class="sect-title">Сколько времени</div>
-    <div class="chips scroll">
-      <button class="chip ${!pState.time ? 'on' : ''}" data-tm="0">Неважно</button>
-      ${T.map(([v, l]) => `<button class="chip ${pState.time === v ? 'on' : ''}" data-tm="${v}">${l}</button>`).join('')}
-    </div>
-
-    ${tags.length ? `
-      <div class="sect-title">Настроение</div>
-      <div class="chips scroll">
-        ${tags.map(t => `<button class="chip ${pState.tags.has(t) ? 'on' : ''}" data-ptag="${esc(t)}">${esc(t)}</button>`).join('')}
-      </div>` : ''}
-
-    <div class="pad" style="margin:16px 16px 4px">
+    <div class="pad" style="margin-bottom:14px">
       <button class="btn" data-act="random" ${!list.length ? 'disabled' : ''}>🎲 Выбери за меня</button>
     </div>
+
+    ${tags.length ? `<div class="chips scroll">
+      ${tags.map(t => `<button class="chip ${quiz.tags.has(t) ? 'on' : ''}" data-ptag="${esc(t)}">${esc(t)}</button>`).join('')}
+    </div>` : ''}
 
     <div class="sect-title">Подходит · ${list.length}</div>
     ${list.length ? gridHtml(list) : `
       <div class="empty">
         <div class="empty-ico">🤔</div>
         <div class="empty-title">Под эти условия ничего нет</div>
-        <div class="empty-text">Ослабь фильтры — или у части игр просто не заполнены игроки и время.</div>
+        <div class="empty-text">Сбрось теги или пройди тест заново с другими ответами.</div>
+        <button class="btn ghost" data-q-reset>Пройти заново</button>
       </div>`}
   `;
 }
@@ -645,6 +760,19 @@ function openGame(id) {
     </button>
 
     <div class="sh-pad">
+      <div class="field-lbl" style="margin-bottom:7px">
+        Настроение ${vibeIsManual(g) ? '' : '<span style="text-transform:none;letter-spacing:0;font-weight:500">· определено само, можно поправить</span>'}
+      </div>
+      <div class="chips">
+        ${VIBES.map(v => `<button class="chip ${vibesOf(g).includes(v.id) ? 'on' : ''}"
+            data-vibe="${v.id}" data-gid="${g.id}">${v.icon} ${esc(v.label)}</button>`).join('')}
+      </div>
+      <div class="hint" style="margin:8px 0 0">
+        Сложность: ${COMPLEXITY_LABEL[complexityOf(g)]}${g.timeToLearn ? ` · правила объяснять ≈${g.timeToLearn} мин` : ''}
+      </div>
+    </div>
+
+    <div class="sh-pad" style="margin-top:16px">
       <div class="field-lbl" style="margin-bottom:7px">Теги</div>
       <div class="chips" id="gd-tags">
         ${(g.tags || []).map(t => `<span class="tag-pill">${esc(t)}</span>`).join('') || '<span class="hint" style="margin:0">пока нет</span>'}
@@ -1195,16 +1323,35 @@ document.addEventListener('click', async e => {
     render(); return;
   }
 
-  // Фильтры подбора
-  const pl = t.closest('[data-pl]');
-  if (pl) { pState.players = +pl.dataset.pl; render(); return; }
-  const tm = t.closest('[data-tm]');
-  if (tm) { pState.time = +tm.dataset.tm; render(); return; }
+  // Тест «что сыграть»
+  const qa = t.closest('[data-q]');
+  if (qa) { quiz[qa.dataset.q] = qa.dataset.v; quiz.step++; render(); return; }
+  if (t.closest('[data-q-back]')) {
+    quiz.step = Math.max(0, quiz.step - 1);
+    quiz[['players', 'simple', 'vibe'][quiz.step]] = null;
+    render(); return;
+  }
+  if (t.closest('[data-q-reset]')) {
+    Object.assign(quiz, { step: 0, players: null, simple: null, vibe: null });
+    quiz.tags.clear();
+    render(); return;
+  }
   const pt = t.closest('[data-ptag]');
   if (pt) {
     const tag = pt.dataset.ptag;
-    pState.tags.has(tag) ? pState.tags.delete(tag) : pState.tags.add(tag);
+    quiz.tags.has(tag) ? quiz.tags.delete(tag) : quiz.tags.add(tag);
     render(); return;
+  }
+
+  // Настроение в карточке игры
+  const vb = t.closest('[data-vibe]');
+  if (vb) {
+    const g = game(vb.dataset.gid); if (!g) return;
+    const cur = new Set(vibesOf(g));
+    const id = vb.dataset.vibe;
+    cur.has(id) ? cur.delete(id) : cur.add(id);
+    g.vibes = [...cur];
+    save(); openGame(g.id); render(); return;
   }
 
   // Действия
@@ -1273,10 +1420,18 @@ document.addEventListener('click', async e => {
     }
 
     case 'random': {
-      const list = pickMatches();
+      const list = quizMatches();
       if (!list.length) break;
-      const g = list[Math.floor(Math.random() * list.length)];
-      openGame(g.id);
+      openGame(list[Math.floor(Math.random() * list.length)].id);
+      break;
+    }
+
+    // Кубик в шапке коллекции: тянет из того, что сейчас на экране,
+    // так что фильтр по тегу или поиск сужают жеребьёвку.
+    case 'random-any': {
+      const list = collectionList().filter(g => !g.lentTo);
+      if (!list.length) { toast('Нечего выбирать'); break; }
+      openGame(list[Math.floor(Math.random() * list.length)].id);
       break;
     }
 
