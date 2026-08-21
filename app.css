@@ -126,6 +126,15 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 .tb-ico { font-size: 21px; line-height: 1; filter: grayscale(1) opacity(.55); transition: filter .18s, transform .18s var(--ease); }
 .tb-item.on { color: var(--accent); }
 .tb-item.on .tb-ico { filter: none; transform: translateY(-1px) scale(1.06); }
+/* Красная точка на вкладке, пока синхронизация сломана */
+.tb-item .tb-ico, .sb-item .sb-ico { position: relative; display: inline-block; }
+.tb-item.sync-bad .tb-ico::after,
+.sb-item.sync-bad .sb-ico::after {
+  content: ''; position: absolute; top: -1px; right: -7px;
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--nav-bg);
+}
 .tb-fab {
   justify-self: center;
   width: 52px; height: 52px; margin-top: -18px;

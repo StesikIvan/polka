@@ -22,7 +22,10 @@ function toast(msg) {
   const t = $('#toast');
   t.textContent = msg;
   t.hidden = false;
-  requestAnimationFrame(() => t.classList.add('in'));
+  // Не через requestAnimationFrame: в фоновой вкладке он не срабатывает,
+  // и сообщение так и осталось бы прозрачным.
+  void t.offsetWidth;
+  t.classList.add('in');
   clearTimeout(toast._t);
   toast._t = setTimeout(() => {
     t.classList.remove('in');
@@ -132,7 +135,17 @@ function parseCode(code) {
 const inviteLink = () => `${location.origin}${location.pathname}#/connect/${makeCode()}`;
 
 /* --- Чтение и запись gist --- */
+// Токен уезжает в HTTP-заголовок: любой лишний символ роняет fetch
+// невнятной ошибкой про ISO-8859-1. Лучше сказать по-человечески.
+const TOKEN_RE = /^[A-Za-z0-9_.-]+$/;
+function checkToken(t) {
+  if (!t) return null;
+  return TOKEN_RE.test(t) ? null : 'В токене посторонние символы — скопируй его заново';
+}
+
 async function gistRead() {
+  const bad = checkToken(cfg.token);
+  if (bad) throw new Error(bad);
   const r = await fetch(`https://api.github.com/gists/${cfg.gistId}`, {
     headers: cfg.token ? { Authorization: `Bearer ${cfg.token}` } : {},
     cache: 'no-store',
@@ -154,7 +167,9 @@ async function gistWrite(data) {
     body: JSON.stringify({ files: { [GIST_FILE]: { content: JSON.stringify(data) } } }),
   });
   if (!r.ok) {
-    if (r.status === 401 || r.status === 403) throw new Error('Токен не подошёл');
+    if (r.status === 401) throw new Error('Токен не подошёл — проверь в Ещё');
+    if (r.status === 403) throw new Error('У токена нет права gist');
+    if (r.status === 404) throw new Error('Хранилище не найдено или токен чужой');
     throw new Error(`Не удалось записать (${r.status})`);
   }
 }
@@ -219,11 +234,23 @@ async function syncNow({ silent = false } = {}) {
   } catch (e) {
     syncState.error = e.message;
     console.warn('sync', e);
-    if (!silent) toast(e.message);
+    // О поломке нужно узнавать сразу, а не через неделю, обнаружив, что
+    // телефон жены живёт своей жизнью. Один раз на каждую новую ошибку.
+    if (!silent || syncState.shown !== e.message) {
+      toast(e.message);
+      syncState.shown = e.message;
+    }
   } finally {
     syncState.busy = false;
     renderSyncRow();
+    markSyncHealth();
   }
+}
+
+// Точка на вкладке «Ещё», пока обмен сломан.
+function markSyncHealth() {
+  const bad = syncOn() && !!syncState.error;
+  $$('[data-tab="settings"]').forEach(el => el.classList.toggle('sync-bad', bad));
 }
 
 // Локальные правки уезжают не мгновенно, а пачкой: пока человек щёлкает
@@ -477,7 +504,7 @@ function openSheet(html, onMount) {
   layer.hidden = false;
   // Всегда возвращаем класс: иначе отложенное скрытие после closeSheet
   // успеет стереть только что открытую шторку.
-  if (!layer.classList.contains('in')) requestAnimationFrame(() => layer.classList.add('in'));
+  if (!layer.classList.contains('in')) { void layer.offsetWidth; layer.classList.add('in'); }
   if (onMount) onMount(sheetBody);
 }
 
@@ -529,6 +556,7 @@ function render() {
   main.scrollTop = scrollMem[raw] || 0;
   updateStuck();
   renderSyncRow();
+  markSyncHealth();
 }
 
 window.addEventListener('hashchange', () => {
@@ -1378,6 +1406,8 @@ function openSyncSetup() {
       const token = withToken ? $('#sy-token', body).value.trim() : '';
       if (!/^[0-9a-f]{16,}$/i.test(gistId)) { toast('Номер хранилища не похож на настоящий'); return; }
       if (withToken && !token) { toast('Вставь токен'); return; }
+      const bad = checkToken(token);
+      if (bad) { toast(bad); return; }
 
       cfg = { ...cfg, gistId, token };
       saveCfg();
