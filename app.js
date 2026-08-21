@@ -792,6 +792,10 @@ function viewPlace(id) {
     ${here.length ? gridHtml(here, false) : `
       <div class="pad"><div class="hint" style="margin:0 0 4px">Прямо на этом уровне игр нет${kids.length ? ' — загляни внутрь' : ''}.</div></div>`}
 
+    <div class="pad" style="margin-top:12px">
+      <button class="btn ghost sm" data-act="place-games" data-id="${p.id}">📦 Отметить, что лежит здесь</button>
+    </div>
+
     <div class="pad" style="margin-top:20px;display:flex;flex-direction:column;gap:9px">
       <button class="btn ghost sm" data-act="edit-place" data-id="${p.id}">✏️ Переименовать</button>
       <button class="btn ghost sm" data-act="del-place" data-id="${p.id}" style="color:var(--danger)">🗑 Удалить ${esc(meta.label.toLowerCase())}</button>
@@ -1278,6 +1282,101 @@ function openPlacePicker(onPick, currentId = null) {
           const kind = nw.dataset.new;
           const created = await promptPlace(kind, nw.dataset.parent || null);
           if (created) { cursor = created.id; draw(); }
+        }
+      };
+    });
+  };
+  draw();
+}
+
+/* ============================================================
+   ШТОРКА: отметить, что лежит на этой полке
+
+   Обратный ход к «выбрать место для игры». Раскладывая коробки, человек
+   стоит у полки и читает корешки, а не вспоминает по одной игре, где она.
+   ============================================================ */
+function openPlaceGames(placeId) {
+  const p = place(placeId);
+  if (!p) return;
+
+  const chosen = new Set(S.games.filter(g => g.placeId === placeId).map(g => g.id));
+  let q = '';
+
+  // Сначала бесхозные — ради них всё и затевалось, потом здешние, потом чужие.
+  const rank = g => g.placeId === placeId ? 1 : (!g.placeId || !place(g.placeId)) ? 0 : 2;
+
+  const draw = () => {
+    const needle = q.trim().toLowerCase();
+    const list = S.games
+      .filter(g => !needle || (g.title || '').toLowerCase().includes(needle)
+                           || (g.titleOrig || '').toLowerCase().includes(needle))
+      .sort((a, b) => rank(a) - rank(b) || collator.compare(a.title, b.title));
+
+    const homeless = S.games.filter(g => !g.placeId || !place(g.placeId)).length;
+
+    openSheet(`
+      ${sheetHead(`${p.icon} ${p.name}`)}
+      <div class="hint" style="margin:-4px 16px 12px">
+        Отметь коробки, которые здесь стоят.${homeless ? ` Без места сейчас ${homeless}.` : ''}
+      </div>
+
+      <div class="field">
+        <input type="text" id="pg-q" placeholder="Поиск по названию" value="${esc(q)}"
+               autocomplete="off" autocapitalize="off" spellcheck="false">
+      </div>
+
+      ${list.length ? `<div class="list">${list.map(g => {
+        const on = chosen.has(g.id);
+        const where = g.placeId === placeId ? 'здесь'
+                    : (!g.placeId || !place(g.placeId)) ? 'без места'
+                    : pathStr(g.placeId);
+        return `<button class="row" data-pg="${g.id}" style="${on ? '' : 'opacity:.55'}">
+          ${g.photoUrl ? `<img class="row-thumb" src="${esc(thumb(g.photoUrl, 200))}" alt="" loading="lazy">`
+                       : `<span class="row-ico" style="width:42px;height:42px">🎲</span>`}
+          <span class="row-main">
+            <span class="row-title">${esc(g.title)}</span>
+            <span class="row-sub">${esc(where)}</span>
+          </span>
+          <span class="row-chev" style="${on ? 'color:var(--accent);opacity:1' : ''}">${on ? '✓' : '○'}</span>
+        </button>`;
+      }).join('')}</div>` : `<div class="hint" style="margin:4px 16px">Ничего не нашлось.</div>`}
+
+      <div class="sh-actions">
+        <button class="btn" data-pg-save>Готово · отмечено ${chosen.size}</button>
+      </div>
+    `, body => {
+      const inp = $('#pg-q', body);
+      inp.addEventListener('input', e => {
+        q = e.target.value;
+        const pos = e.target.selectionStart;
+        draw();
+        const again = $('#pg-q', sheetBody);
+        if (again) { again.focus(); again.setSelectionRange(pos, pos); }
+      });
+
+      body.onclick = e => {
+        if (e.target.closest('[data-sh-close]')) { closeSheet(); return; }
+
+        const row = e.target.closest('[data-pg]');
+        if (row) {
+          const id = row.dataset.pg;
+          chosen.has(id) ? chosen.delete(id) : chosen.add(id);
+          draw();
+          return;
+        }
+
+        if (e.target.closest('[data-pg-save]')) {
+          let moved = 0;
+          S.games.forEach(g => {
+            const shouldBeHere = chosen.has(g.id);
+            const isHere = g.placeId === placeId;
+            if (shouldBeHere === isHere) return;
+            g.placeId = shouldBeHere ? placeId : null;
+            saveGame(g);
+            moved++;
+          });
+          closeSheet(); render();
+          toast(moved ? `Разложено: ${moved}` : 'Ничего не изменилось');
         }
       };
     });
@@ -1840,6 +1939,7 @@ document.addEventListener('click', async e => {
       break;
     }
 
+    case 'place-games': openPlaceGames(act.dataset.id); break;
     case 'edit-tags': openEditTags(act.dataset.id); break;
     case 'edit-note': openEditNote(act.dataset.id); break;
 
