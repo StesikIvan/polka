@@ -37,7 +37,7 @@ function toast(msg) {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 9';
+const BUILD = '2026-08-22 · 10';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -250,6 +250,15 @@ async function syncNow({ silent = false } = {}) {
     const remote = await gistRead();
     const merged = mergeStates(S, remote);
 
+    // Запись идёт сразу за чтением, без перерисовки посередине: чем уже
+    // окно между ними, тем меньше шансов, что в него вклинится другой
+    // телефон и затрёт нашу правку. Насовсем она всё равно не пропадёт —
+    // у нас есть своя копия, и следующий обмен вернёт её обратно, —
+    // но лишнего мигания лучше избежать.
+    if (canWrite() && fingerprint(merged) !== fingerprint(remote)) {
+      await gistWrite(merged);
+    }
+
     if (fingerprint(merged) !== fingerprint(S)) {
       // Запись приехавшего — не повод тут же слать всё обратно.
       syncState.applying = true;
@@ -257,9 +266,6 @@ async function syncNow({ silent = false } = {}) {
       save();
       syncState.applying = false;
       render();
-    }
-    if (canWrite() && fingerprint(merged) !== fingerprint(remote)) {
-      await gistWrite(merged);
     }
 
     syncState.at = now();
@@ -2260,6 +2266,14 @@ if (syncOn()) {
     if (!document.hidden && now() - (cfg.lastSync || 0) > 20000) syncNow({ silent: true });
   });
   window.addEventListener('online', () => syncNow({ silent: true }));
+
+  // Пока приложение открыто, подглядываем в хранилище раз в минуту.
+  // Это и есть самозалечивание: если чью-то правку случайно затёрли,
+  // устройство, у которого она осталась, вернёт её само, без участия
+  // человека. Заодно раскладка вдвоём идёт «вживую», а не рывками.
+  setInterval(() => {
+    if (!document.hidden && !syncState.busy) syncNow({ silent: true });
+  }, 60000);
 }
 
 if ('serviceWorker' in navigator) {
