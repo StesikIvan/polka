@@ -108,12 +108,26 @@ const TRASH_TTL = 90 * 24 * 3600 * 1000;   // надгробия старше т
 
 let syncState = { busy: false, at: 0, error: null };
 
+// Объявлена через function, а не const: loadCfg вызывается выше по файлу,
+// и стрелочная функция к тому моменту ещё не существует.
+// Невидимое (пробелы, неразрывный пробел, нулевой ширины, BOM) цепляется
+// при копировании из веба само — вычищаем и не беспокоим человека.
+function cleanToken(t) {
+  return String(t || '').replace(/[\s ​-‍﻿]/g, '');
+}
+
 function loadCfg() {
+  let raw = null;
   try {
-    const c = JSON.parse(localStorage.getItem(CFG_KEY)) || {};
-    if (c.token) c.token = cleanToken(c.token);   // подчищаем то, что уже сохранено
-    return c;
-  } catch { return {}; }
+    raw = JSON.parse(localStorage.getItem(CFG_KEY));
+  } catch (e) {
+    console.error('Настройки синхронизации не читаются:', e);
+  }
+  // Чистка снаружи try: ошибка в коде должна падать громко, а не приводить
+  // к тихой потере токена — именно так синхронизация и слетала.
+  const c = (raw && typeof raw === 'object') ? raw : {};
+  if (c.token) c.token = cleanToken(c.token);
+  return c;
 }
 
 let cfg = loadCfg();
@@ -148,11 +162,7 @@ function parseInvite(text) {
 }
 
 /* --- Чтение и запись gist --- */
-// Токен уезжает в HTTP-заголовок: любой лишний символ роняет fetch
-// невнятной ошибкой про ISO-8859-1.
-// Невидимое (пробелы, неразрывный пробел, нулевой ширины, BOM) выбрасываем
-// молча — при копировании из веба оно цепляется само и человек не виноват.
-const cleanToken = t => String(t || '').replace(/[\s ​-‍﻿]/g, '');
+/* Чистка токена — выше, рядом с loadCfg: она нужна ещё при загрузке. */
 
 function checkToken(t) {
   if (!t) return null;
