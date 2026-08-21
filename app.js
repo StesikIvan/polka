@@ -52,7 +52,19 @@ const PRESET_TAGS = ['для компании', 'на двоих', 'семейн
 let S = load();
 
 function blank() {
-  return { v: 1, places: [], games: [], seenIntro: false };
+  // trash — «надгробия» удалённых записей: без них удаление на одном
+  // устройстве откатывалось бы обратно при слиянии с другим.
+  return { v: 1, places: [], games: [], trash: {}, seenIntro: false };
+}
+
+const now = () => Date.now();
+
+// Любое изменение записи помечается временем — на этом держится слияние.
+function touch(o) { o.updatedAt = now(); return o; }
+
+function bury(id) {
+  S.trash = S.trash || {};
+  S.trash[id] = now();
 }
 
 function load() {
@@ -74,6 +86,170 @@ function save() {
     toast('Не хватает места в хранилище');
     console.error(e);
   }
+  if (typeof schedulePush === 'function') schedulePush();
+}
+
+/* ============================================================
+   СИНХРОНИЗАЦИЯ
+
+   Общее хранилище — секретный gist на GitHub. Сервера нет, платить не за что.
+   Читается он по одному лишь номеру, пишется только с токеном.
+
+   Слияние идёт по каждой записи отдельно, а не «чей файл новее»: иначе жена,
+   добавившая игру с телефона, затёрла бы всё, что ты успел поправить на Маке.
+   У каждой игры и каждого места есть updatedAt, у удалённых — надгробие в trash.
+   ============================================================ */
+const CFG_KEY = 'polka.sync';
+const GIST_FILE = 'polka.json';
+const TRASH_TTL = 90 * 24 * 3600 * 1000;   // надгробия старше трёх месяцев не нужны
+
+let cfg = loadCfg();
+let syncState = { busy: false, at: 0, error: null };
+
+function loadCfg() {
+  try { return JSON.parse(localStorage.getItem(CFG_KEY)) || {}; }
+  catch { return {}; }
+}
+function saveCfg() { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); }
+
+const syncOn = () => !!(cfg.gistId);
+const canWrite = () => !!(cfg.gistId && cfg.token);
+
+/* --- Код подключения: номер gist и токен в одной строке --- */
+function makeCode() {
+  const raw = `${cfg.gistId}:${cfg.token || ''}`;
+  return btoa(unescape(encodeURIComponent(raw))).replace(/=+$/, '');
+}
+function parseCode(code) {
+  try {
+    const raw = decodeURIComponent(escape(atob(code.trim())));
+    const i = raw.indexOf(':');
+    if (i < 0) return null;
+    const gistId = raw.slice(0, i), token = raw.slice(i + 1);
+    return /^[0-9a-f]{16,}$/i.test(gistId) ? { gistId, token } : null;
+  } catch { return null; }
+}
+const inviteLink = () => `${location.origin}${location.pathname}#/connect/${makeCode()}`;
+
+/* --- Чтение и запись gist --- */
+async function gistRead() {
+  const r = await fetch(`https://api.github.com/gists/${cfg.gistId}`, {
+    headers: cfg.token ? { Authorization: `Bearer ${cfg.token}` } : {},
+    cache: 'no-store',
+  });
+  if (!r.ok) throw new Error(r.status === 404 ? 'Хранилище не найдено' : `GitHub ответил ${r.status}`);
+  const d = await r.json();
+  const f = d.files && d.files[GIST_FILE];
+  if (!f) return blank();
+  // Файлы больше мегабайта приходят обрезанными — их надо дочитать по прямой ссылке.
+  const text = f.truncated ? await (await fetch(f.raw_url, { cache: 'no-store' })).text() : f.content;
+  try { return { ...blank(), ...JSON.parse(text) }; }
+  catch { return blank(); }
+}
+
+async function gistWrite(data) {
+  const r = await fetch(`https://api.github.com/gists/${cfg.gistId}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files: { [GIST_FILE]: { content: JSON.stringify(data) } } }),
+  });
+  if (!r.ok) {
+    if (r.status === 401 || r.status === 403) throw new Error('Токен не подошёл');
+    throw new Error(`Не удалось записать (${r.status})`);
+  }
+}
+
+/* --- Слияние двух состояний --- */
+function mergeStates(a, b) {
+  const trash = {};
+  const cut = now() - TRASH_TTL;
+  for (const src of [a.trash || {}, b.trash || {}])
+    for (const [id, t] of Object.entries(src))
+      if (t > cut) trash[id] = Math.max(trash[id] || 0, t);
+
+  const mergeList = (x = [], y = []) => {
+    const m = new Map();
+    for (const it of [...x, ...y]) {
+      if (!it || !it.id) continue;
+      const prev = m.get(it.id);
+      if (!prev || (it.updatedAt || 0) >= (prev.updatedAt || 0)) m.set(it.id, it);
+    }
+    // Удаление побеждает только если оно новее последней правки записи.
+    return [...m.values()].filter(it => !(trash[it.id] >= (it.updatedAt || 0)));
+  };
+
+  return {
+    v: 1,
+    games: mergeList(a.games, b.games),
+    places: mergeList(a.places, b.places),
+    trash,
+  };
+}
+
+const fingerprint = d => JSON.stringify({
+  g: (d.games || []).map(x => [x.id, x.updatedAt || 0]).sort(),
+  p: (d.places || []).map(x => [x.id, x.updatedAt || 0]).sort(),
+  t: Object.entries(d.trash || {}).sort(),
+});
+
+async function syncNow({ silent = false } = {}) {
+  if (!syncOn() || syncState.busy) return;
+  syncState.busy = true; syncState.error = null;
+  if (!silent) renderSyncRow();
+
+  try {
+    const remote = await gistRead();
+    const merged = mergeStates(S, remote);
+
+    if (fingerprint(merged) !== fingerprint(S)) {
+      // Запись приехавшего — не повод тут же слать всё обратно.
+      syncState.applying = true;
+      Object.assign(S, merged);
+      save();
+      syncState.applying = false;
+      render();
+    }
+    if (canWrite() && fingerprint(merged) !== fingerprint(remote)) {
+      await gistWrite(merged);
+    }
+
+    syncState.at = now();
+    cfg.lastSync = syncState.at; saveCfg();
+    if (!silent) toast('Синхронизировано');
+  } catch (e) {
+    syncState.error = e.message;
+    console.warn('sync', e);
+    if (!silent) toast(e.message);
+  } finally {
+    syncState.busy = false;
+    renderSyncRow();
+  }
+}
+
+// Локальные правки уезжают не мгновенно, а пачкой: пока человек щёлкает
+// теги, дёргать сеть на каждый тап незачем.
+let pushTimer = null;
+function schedulePush() {
+  if (!syncOn() || syncState.applying) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => syncNow({ silent: true }), 2500);
+}
+
+function renderSyncRow() {
+  const el = $('#sync-status');
+  if (!el) return;
+  el.textContent = syncState.busy ? 'Обмен…'
+    : syncState.error ? syncState.error
+    : cfg.lastSync ? `Обновлено ${agoStr(cfg.lastSync)}`
+    : 'Ещё не синхронизировалось';
+}
+
+function agoStr(t) {
+  const s = Math.round((now() - t) / 1000);
+  if (s < 60) return 'только что';
+  if (s < 3600) return `${Math.round(s / 60)} мин назад`;
+  if (s < 86400) return `${Math.round(s / 3600)} ч назад`;
+  return `${Math.round(s / 86400)} дн назад`;
 }
 
 /* ---------- Операции с местами ---------- */
@@ -103,15 +279,16 @@ function gamesIn(id, deep = true) {
 }
 
 function addPlace(parentId, kind, name, icon) {
-  const p = { id: uid(), parentId: parentId || null, kind, name: name.trim(), icon: icon || KINDS[kind].icon };
+  const p = touch({ id: uid(), parentId: parentId || null, kind, name: name.trim(), icon: icon || KINDS[kind].icon });
   S.places.push(p); save();
   return p;
 }
 
 function removePlace(id) {
   const ids = new Set(descendantIds(id));
-  S.games.forEach(g => { if (ids.has(g.placeId)) g.placeId = null; });
+  S.games.forEach(g => { if (ids.has(g.placeId)) { g.placeId = null; touch(g); } });
   S.places = S.places.filter(p => !ids.has(p.id));
+  ids.forEach(bury);
   save();
 }
 
@@ -125,6 +302,7 @@ function allTags() {
 }
 
 function saveGame(g) {
+  touch(g);
   const i = S.games.findIndex(x => x.id === g.id);
   if (i >= 0) S.games[i] = g; else S.games.push(g);
   save();
@@ -132,6 +310,7 @@ function saveGame(g) {
 
 function removeGame(id) {
   S.games = S.games.filter(g => g.id !== id);
+  bury(id);
   save();
 }
 
@@ -335,6 +514,9 @@ function render() {
   const raw = (location.hash || '#/collection').slice(2);
   const [route, arg] = raw.split('/');
 
+  // Приглашение с другого устройства приходит обычной ссылкой.
+  if (route === 'connect' && arg) { openConnect(arg); return render(); }
+
   $$('[data-tab]').forEach(el => el.classList.toggle('on',
     el.dataset.tab === route || (route === 'place' && el.dataset.tab === 'home')));
 
@@ -346,6 +528,7 @@ function render() {
   view.innerHTML = fn(arg);
   main.scrollTop = scrollMem[raw] || 0;
   updateStuck();
+  renderSyncRow();
 }
 
 window.addEventListener('hashchange', () => {
@@ -695,6 +878,38 @@ function viewSettings() {
       <div class="stat"><div class="stat-v">${furn + spots}</div><div class="stat-l">мест хранения</div></div>
     </div>
     ${noPlace ? `<div class="hint" style="color:var(--danger)">Без места лежит ${noPlace} ${plural(noPlace, 'игра', 'игры', 'игр')}.</div>` : ''}
+
+    <div class="sect-title">Синхронизация</div>
+    ${syncOn() ? `
+      <div class="list">
+        <button class="row" data-act="sync-now">
+          <span class="row-ico">${canWrite() ? '🔄' : '👁'}</span>
+          <span class="row-main">
+            <span class="row-title">${canWrite() ? 'Синхронизировать сейчас' : 'Только чтение'}</span>
+            <span class="row-sub" id="sync-status">…</span>
+          </span><span class="row-chev">›</span>
+        </button>
+        <button class="row" data-act="sync-invite">
+          <span class="row-ico">📲</span>
+          <span class="row-main"><span class="row-title">Подключить ещё устройство</span>
+          <span class="row-sub">Ссылка для телефона жены или второго телефона</span></span><span class="row-chev">›</span>
+        </button>
+        <button class="row danger" data-act="sync-off">
+          <span class="row-ico">⛓️‍💥</span>
+          <span class="row-main"><span class="row-title">Отключить это устройство</span>
+          <span class="row-sub">Коллекция останется здесь, обмен прекратится</span></span>
+        </button>
+      </div>
+      ${!canWrite() ? '<div class="hint" style="color:var(--danger)">Без токена правки с этого устройства никуда не уезжают.</div>' : ''}
+    ` : `
+      <div class="list">
+        <button class="row" data-act="sync-setup">
+          <span class="row-ico">☁️</span>
+          <span class="row-main"><span class="row-title">Включить синхронизацию</span>
+          <span class="row-sub">Одна коллекция на Маке и телефонах</span></span><span class="row-chev">›</span>
+        </button>
+      </div>
+    `}
 
     <div class="sect-title">Пополнить коллекцию</div>
     <div class="list">
@@ -1050,7 +1265,7 @@ function promptPlace(kind, parentId, existing = null) {
         const name = inp.value.trim();
         if (!name) { inp.focus(); return; }
         if (existing) {
-          existing.name = name; existing.icon = icon; save();
+          existing.name = name; existing.icon = icon; touch(existing); save();
           resolve(existing);
         } else {
           resolve(addPlace(parentId, kind, name, icon));
@@ -1096,7 +1311,7 @@ function openEditTags(id) {
       e.target.value = '';
     });
     $('#et-ok', body).addEventListener('click', () => {
-      g.tags = draft; save(); closeSheet(); render(); toast('Теги обновлены');
+      g.tags = draft; saveGame(g); closeSheet(); render(); toast('Теги обновлены');
     });
   });
 }
@@ -1119,7 +1334,128 @@ function openEditNote(id) {
     $('#en-ok', body).addEventListener('click', () => {
       g.note = $('#en-note', body).value.trim();
       g.lentTo = $('#en-lent', body).value.trim();
-      save(); closeSheet(); render(); toast('Сохранено');
+      saveGame(g); closeSheet(); render(); toast('Сохранено');
+    });
+  });
+}
+
+/* ============================================================
+   ШТОРКИ СИНХРОНИЗАЦИИ
+   ============================================================ */
+const DEFAULT_GIST = '43ad041b1c71cdc85b5f760e69d18b77';
+
+function openSyncSetup() {
+  openSheet(`
+    ${sheetHead('Синхронизация')}
+    <div class="hint" style="margin:-4px 16px 14px">
+      Коллекция будет лежать в секретном gist на GitHub — это бесплатно и без сервера.
+      Читать его можно по номеру, а вот записывать — только с твоим токеном.
+      Токен хранится на устройстве и никуда, кроме api.github.com, не уходит.
+    </div>
+
+    <div class="field">
+      <div class="field-lbl">Номер хранилища</div>
+      <input type="text" id="sy-gist" value="${esc(cfg.gistId || DEFAULT_GIST)}" autocapitalize="off" spellcheck="false">
+    </div>
+
+    <div class="field">
+      <div class="field-lbl">Токен GitHub</div>
+      <input type="password" id="sy-token" placeholder="ghp_…" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <div class="hint" style="margin:8px 0 0">
+        Создать: <b>github.com → Settings → Developer settings → Personal access tokens →
+        Tokens (classic) → Generate new token</b>. Отметь <b>только</b> галочку <code>gist</code> —
+        больше ничего. Так токен не сможет ничего, кроме этой коллекции.
+      </div>
+    </div>
+
+    <div class="sh-actions">
+      <button class="btn" id="sy-ok">Подключить</button>
+      <button class="btn ghost sm" id="sy-ro">Пока только читать</button>
+    </div>
+  `, body => {
+    const finish = async withToken => {
+      const gistId = $('#sy-gist', body).value.trim();
+      const token = withToken ? $('#sy-token', body).value.trim() : '';
+      if (!/^[0-9a-f]{16,}$/i.test(gistId)) { toast('Номер хранилища не похож на настоящий'); return; }
+      if (withToken && !token) { toast('Вставь токен'); return; }
+
+      cfg = { ...cfg, gistId, token };
+      saveCfg();
+      closeSheet();
+      await syncNow();
+      render();
+    };
+    $('#sy-ok', body).addEventListener('click', () => finish(true));
+    $('#sy-ro', body).addEventListener('click', () => finish(false));
+  });
+}
+
+function openInvite() {
+  const link = inviteLink();
+  openSheet(`
+    ${sheetHead('Подключить устройство')}
+    <div class="hint" style="margin:-4px 16px 14px">
+      Открой эту ссылку на нужном телефоне — приложение само подхватит коллекцию,
+      вводить ничего не придётся.
+    </div>
+    <div class="field">
+      <div class="field-lbl">Ссылка-приглашение</div>
+      <textarea id="iv-link" readonly style="min-height:92px;font-size:12px;word-break:break-all">${esc(link)}</textarea>
+    </div>
+    <div class="sh-actions">
+      <button class="btn" id="iv-copy">Скопировать ссылку</button>
+      ${navigator.share ? `<button class="btn ghost sm" id="iv-share">Отправить…</button>` : ''}
+    </div>
+    <div class="hint" style="margin-top:14px;color:var(--danger)">
+      Внутри ссылки лежит твой токен. Обращайся с ней как с паролем: отправь жене
+      в личку и не выкладывай никуда в общий доступ.
+    </div>
+  `, body => {
+    $('#iv-copy', body).addEventListener('click', () => {
+      navigator.clipboard.writeText(link)
+        .then(() => toast('Ссылка скопирована'))
+        .catch(() => { $('#iv-link', body).select(); toast('Скопируй выделенное'); });
+    });
+    const sh = $('#iv-share', body);
+    if (sh) sh.addEventListener('click', () =>
+      navigator.share({ title: 'Полка — наша коллекция настолок', url: link }).catch(() => {}));
+  });
+}
+
+function openConnect(code) {
+  const parsed = parseCode(code);
+  history.replaceState(null, '', location.pathname + '#/collection');
+
+  if (!parsed) {
+    openSheet(`${sheetHead('Не получилось')}
+      <div class="hint" style="margin:0 16px 16px">Ссылка испорчена — попроси прислать заново.</div>
+      <div class="sh-actions"><button class="btn ghost" data-sh-close>Понятно</button></div>`);
+    return;
+  }
+
+  const mine = S.games.length;
+  openSheet(`
+    ${sheetHead('Общая коллекция')}
+    <div style="text-align:center;padding:6px 16px 18px">
+      <div style="font-size:46px">🎲</div>
+      <div style="font-size:19px;font-weight:750;margin-top:10px;letter-spacing:-.02em">Подключить это устройство?</div>
+      <div class="hint" style="margin-top:8px">
+        Коллекция станет общей: что добавишь здесь — появится на других устройствах, и наоборот.
+        ${mine ? `<br><br>Игры, которые уже есть на этом устройстве (${mine}), не пропадут — они вольются в общую.` : ''}
+      </div>
+    </div>
+    <div class="sh-actions">
+      <button class="btn" id="cn-ok">Подключить</button>
+      <button class="btn ghost sm" data-sh-close>Не сейчас</button>
+    </div>
+  `, body => {
+    $('#cn-ok', body).addEventListener('click', async () => {
+      cfg = { ...cfg, ...parsed };
+      saveCfg();
+      closeSheet();
+      await syncNow();
+      render();
+      toast('Устройство подключено');
     });
   });
 }
@@ -1351,7 +1687,7 @@ document.addEventListener('click', async e => {
     const id = vb.dataset.vibe;
     cur.has(id) ? cur.delete(id) : cur.add(id);
     g.vibes = [...cur];
-    save(); openGame(g.id); render(); return;
+    saveGame(g); openGame(g.id); render(); return;
   }
 
   // Действия
@@ -1402,7 +1738,7 @@ document.addEventListener('click', async e => {
     case 'move-game': {
       const g = game(act.dataset.id); if (!g) break;
       openPlacePicker(pid => {
-        g.placeId = pid; save();
+        g.placeId = pid; saveGame(g);
         closeSheet(); render();
         toast(pid ? `Теперь: ${pathStr(pid)}` : 'Место снято');
       }, g.placeId);
@@ -1435,6 +1771,15 @@ document.addEventListener('click', async e => {
       break;
     }
 
+    case 'sync-setup': openSyncSetup(); break;
+    case 'sync-invite': openInvite(); break;
+    case 'sync-now': syncNow(); break;
+
+    case 'sync-off':
+      if (!confirm('Отключить это устройство от общей коллекции?\nИгры останутся здесь, но обмен прекратится.')) break;
+      cfg = {}; saveCfg(); render(); toast('Отключено');
+      break;
+
     case 'bulk': openBulk(); break;
     case 'export': exportJSON(); break;
     case 'import': importJSON(); break;
@@ -1445,10 +1790,18 @@ document.addEventListener('click', async e => {
         .catch(() => toast('Буфер недоступен'));
       break;
 
-    case 'wipe':
-      if (!confirm('Стереть всю коллекцию и все места? Отменить будет нельзя.')) break;
-      S = blank(); save(); go('#/collection'); render(); toast('Пусто');
+    case 'wipe': {
+      const warn = syncOn()
+        ? 'Стереть всю коллекцию и все места?\nУстройства подключены к общей коллекции — сотрётся и у них тоже.\nОтменить будет нельзя.'
+        : 'Стереть всю коллекцию и все места? Отменить будет нельзя.';
+      if (!confirm(warn)) break;
+      // Надгробия оставляем, иначе стёртое приедет обратно с другого устройства.
+      const graves = { ...(S.trash || {}) };
+      [...S.games, ...S.places].forEach(x => { graves[x.id] = now(); });
+      S = { ...blank(), trash: graves };
+      save(); go('#/collection'); render(); toast('Пусто');
       break;
+    }
   }
 });
 
@@ -1468,6 +1821,16 @@ $('#sb-add').addEventListener('click', openAddGame);
 /* ---------- Старт ---------- */
 if (!location.hash) location.hash = '#/collection';
 render();
+
+// Подтягиваем чужие правки при запуске, при возврате к вкладке
+// и когда связь вернулась.
+if (syncOn()) {
+  setTimeout(() => syncNow({ silent: true }), 400);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && now() - (cfg.lastSync || 0) > 20000) syncNow({ silent: true });
+  });
+  window.addEventListener('online', () => syncNow({ silent: true }));
+}
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
