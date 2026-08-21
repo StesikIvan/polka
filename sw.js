@@ -1,6 +1,6 @@
 /* Полка — service worker.
    Оболочка приложения кэшируется навсегда, обложки — по мере просмотра. */
-const SHELL = 'polka-shell-v1';
+const SHELL = 'polka-shell-v2';
 const MEDIA = 'polka-media-v1';
 
 const FILES = [
@@ -50,9 +50,12 @@ self.addEventListener('fetch', e => {
   }
 
   // Своя оболочка: сеть с откатом в кэш, чтобы работало офлайн.
+  // cache: 'no-cache' заставляет перепроверить файл на сервере по ETag.
+  // Без этого GitHub Pages держит app.js в кэше браузера десять минут,
+  // и свежая версия доезжает до устройства с опозданием.
   if (url.origin === location.origin) {
     e.respondWith(
-      fetch(req)
+      fetch(req.url, { cache: 'no-cache' })
         .then(res => {
           const copy = res.clone();
           caches.open(SHELL).then(c => c.put(req, copy)).catch(() => {});

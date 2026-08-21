@@ -35,6 +35,9 @@ function toast(msg) {
 
 /* ---------- Хранилище ---------- */
 const KEY = 'polka.v1';
+// Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
+// свежая версия у человека или браузер отдал старую из кэша.
+const BUILD = '2026-08-22 · 6';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -996,7 +999,7 @@ function viewSettings() {
       Данные хранятся только на этом устройстве, в браузере. Ничего никуда не отправляется.
       Информация об играх подтягивается с <b>tesera.ru</b>.
     </div>
-    <div class="hint" style="margin-top:10px;opacity:.6">Полка · версия 1.0</div>
+    <div class="hint" style="margin-top:10px;opacity:.6">Полка · сборка ${esc(BUILD)}</div>
   `;
 }
 
