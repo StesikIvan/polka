@@ -58,7 +58,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 13';
+const BUILD = '2026-08-22 · 14';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -81,7 +81,19 @@ let S = load();
 function blank() {
   // trash — «надгробия» удалённых записей: без них удаление на одном
   // устройстве откатывалось бы обратно при слиянии с другим.
-  return { v: 1, places: [], games: [], trash: {}, seenIntro: false };
+  return { v: 1, places: [], games: [], trash: {} };
+}
+
+// Данные приходят из двух мест, и оба могут оказаться битыми: локальное
+// хранилище после сбоя записи, общее — если файл кто-то поправил руками.
+// Одного `games: null` хватит, чтобы приложение не открылось вовсе,
+// поэтому форму проверяем всегда, а не надеемся на неё.
+function normalizeState(d) {
+  const out = { ...blank(), ...(d && typeof d === 'object' ? d : {}) };
+  out.games  = Array.isArray(out.games)  ? out.games.filter(x => x && x.id)  : [];
+  out.places = Array.isArray(out.places) ? out.places.filter(x => x && x.id) : [];
+  out.trash  = (out.trash && typeof out.trash === 'object' && !Array.isArray(out.trash)) ? out.trash : {};
+  return out;
 }
 
 const now = () => Date.now();
@@ -98,8 +110,7 @@ function load() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return blank();
-    const d = JSON.parse(raw);
-    return { ...blank(), ...d };
+    return normalizeState(JSON.parse(raw));
   } catch (e) {
     console.warn('Не удалось прочитать хранилище:', e);
     return blank();
@@ -205,14 +216,30 @@ async function gistRead() {
     headers: cfg.token ? { Authorization: `Bearer ${cfg.token}` } : {},
     cache: 'no-store',
   });
-  if (!r.ok) throw new Error(r.status === 404 ? 'Хранилище не найдено' : `GitHub ответил ${r.status}`);
+  if (!r.ok) throw new Error(githubError(r));
   const d = await r.json();
   const f = d.files && d.files[GIST_FILE];
   if (!f) return blank();
   // Файлы больше мегабайта приходят обрезанными — их надо дочитать по прямой ссылке.
   const text = f.truncated ? await (await fetch(f.raw_url, { cache: 'no-store' })).text() : f.content;
-  try { return { ...blank(), ...JSON.parse(text) }; }
+  try { return normalizeState(JSON.parse(text)); }
   catch { return blank(); }
+}
+
+// GitHub отвечает 403 и на нехватку прав, и на исчерпанный лимит запросов.
+// Разница принципиальная: в первом случае надо перевыпускать токен,
+// во втором — просто подождать.
+function githubError(r) {
+  if (r.status === 401) return 'Токен не подошёл — проверь в Ещё';
+  if (r.status === 404) return 'Хранилище не найдено или токен чужой';
+  if (r.status === 403) {
+    return r.headers.get('x-ratelimit-remaining') === '0'
+      ? 'GitHub ограничил запросы — сам отпустит в течение часа'
+      : 'У токена нет права gist';
+  }
+  if (r.status === 422) return 'Коллекция слишком велика для хранилища';
+  if (r.status >= 500) return 'GitHub сейчас недоступен';
+  return `GitHub ответил ${r.status}`;
 }
 
 async function gistWrite(data) {
@@ -221,12 +248,7 @@ async function gistWrite(data) {
     headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ files: { [GIST_FILE]: { content: JSON.stringify(data) } } }),
   });
-  if (!r.ok) {
-    if (r.status === 401) throw new Error('Токен не подошёл — проверь в Ещё');
-    if (r.status === 403) throw new Error('У токена нет права gist');
-    if (r.status === 404) throw new Error('Хранилище не найдено или токен чужой');
-    throw new Error(`Не удалось записать (${r.status})`);
-  }
+  if (!r.ok) throw new Error(githubError(r));
 }
 
 /* --- Слияние двух состояний --- */
@@ -353,6 +375,14 @@ function pathOf(id) {
   return out;
 }
 const pathStr = (id, sep = ' › ') => pathOf(id).map(p => p.name).join(sep);
+
+// Потерянные места: родителя удалили на одном устройстве, пока на другом
+// в него что-то добавляли. Само место уцелело, но попасть в него неоткуда —
+// «Квартира» показывает только комнаты. Их надо показать отдельно,
+// иначе они и лежащие в них игры пропадают из виду навсегда.
+const orphanPlaces = () =>
+  S.places.filter(p => p.parentId && !place(p.parentId))
+          .sort((a, b) => collator.compare(a.name, b.name));
 
 function descendantIds(id) {
   const out = [id];
@@ -533,10 +563,25 @@ function whereShort(g) {
 /* ---------- API Tesera ---------- */
 const TESERA = 'https://api.tesera.ru';
 
+// Без таймаута зависший запрос оставляет крутилку навсегда, и человек
+// не понимает, ищется у него что-то или уже нет.
+async function teseraFetch(path, timeout = 12000) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeout);
+  try {
+    const r = await fetch(TESERA + path, { signal: ac.signal });
+    if (!r.ok) throw new Error(`Тесера ответила ${r.status}`);
+    return await r.json();
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('Тесера не отвечает');
+    throw e;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 async function teseraSearch(q) {
-  const r = await fetch(`${TESERA}/search/games?query=${encodeURIComponent(q)}`);
-  if (!r.ok) throw new Error('search ' + r.status);
-  const d = await r.json();
+  const d = await teseraFetch(`/search/games?query=${encodeURIComponent(q)}`);
   return (Array.isArray(d) ? d : []).filter(x => x.type === 'Game');
 }
 
@@ -567,9 +612,7 @@ function bestHit(hits, query) {
 }
 
 async function teseraGame(alias) {
-  const r = await fetch(`${TESERA}/games/${encodeURIComponent(alias)}`);
-  if (!r.ok) throw new Error('game ' + r.status);
-  const d = await r.json();
+  const d = await teseraFetch(`/games/${encodeURIComponent(alias)}`);
   return d.game || null;
 }
 
@@ -602,7 +645,6 @@ function fromTesera(t) {
 
 /* ---------- Шторка ---------- */
 const layer = $('#sheet-layer'), sheetBody = $('#sheet-body');
-let sheetStack = [];
 
 function openSheet(html, onMount) {
   sheetBody.onclick = null;   // сбрасываем делегат предыдущей шторки
@@ -616,7 +658,6 @@ function openSheet(html, onMount) {
 }
 
 function closeSheet() {
-  sheetStack = [];
   layer.classList.remove('in');
   setTimeout(() => { if (!layer.classList.contains('in')) { layer.hidden = true; sheetBody.innerHTML = ''; } }, 360);
 }
@@ -795,8 +836,9 @@ function viewHome() {
   const rooms = S.places.filter(p => p.kind === 'room').sort((a, b) => collator.compare(a.name, b.name));
   const homeless = S.games.filter(g => !g.placeId || !place(g.placeId));
   const lent = S.games.filter(g => g.lentTo);
+  const lost = orphanPlaces();
 
-  if (!rooms.length) {
+  if (!rooms.length && !lost.length) {
     return header('Квартира', '') + `<div class="empty">
       <div class="empty-ico">🏠</div>
       <div class="empty-title">Комнат пока нет</div>
@@ -819,10 +861,26 @@ function viewHome() {
   }).join('');
 
   return header('Квартира', `${S.games.length} ${plural(S.games.length, 'игра', 'игры', 'игр')} по ${rooms.length} ${plural(rooms.length, 'комнате', 'комнатам', 'комнатам')}`) + `
-    <div class="list">${roomRows}</div>
+    ${roomRows ? `<div class="list">${roomRows}</div>` : ''}
     <div class="pad" style="margin-top:12px">
       <button class="btn ghost sm" data-act="add-room">＋ Добавить комнату</button>
     </div>
+
+    ${lost.length ? `
+      <div class="sect-title">Потерянные места</div>
+      <div class="list">${lost.map(p => {
+        const n = gamesIn(p.id).length;
+        return `<a class="row" href="#/place/${p.id}">
+          <span class="row-ico">${esc(p.icon)}</span>
+          <span class="row-main">
+            <span class="row-title">${esc(p.name)}</span>
+            <span class="row-sub">${n} ${plural(n, 'игра', 'игры', 'игр')} · комнату удалили</span>
+          </span><span class="row-chev">›</span>
+        </a>`;
+      }).join('')}</div>
+      <div class="hint">Комнату, в которой они лежали, удалили с другого устройства. Зайди внутрь и перенеси или удали.</div>
+    ` : ''}
+
     ${lent.length ? `
       <div class="sect-title">Одолжены</div>
       <div class="list">${lent.map(g => gameRow(g, `🤝 у ${g.lentTo}`)).join('')}</div>` : ''}
@@ -849,7 +907,16 @@ function gameRow(g, sub) {
 /* ---------- Экран места ---------- */
 function viewPlace(id) {
   const p = place(id);
-  if (!p) { go('#/home'); return ''; }
+  // Место могли удалить с другого устройства, пока ты стоял на этом экране.
+  // Перебрасывать молча нельзя — человек не поймёт, куда делся экран.
+  if (!p) {
+    return header('Место удалено', '', '#/home', 'Квартира') + `<div class="empty">
+      <div class="empty-ico">🕳️</div>
+      <div class="empty-title">Этого места больше нет</div>
+      <div class="empty-text">Его удалили — возможно, с другого устройства. Игры, которые тут лежали, остались в коллекции без места.</div>
+      <a class="btn" href="#/home">К списку комнат</a>
+    </div>`;
+  }
 
   const kids = childrenOf(id);
   const here = S.games.filter(g => g.placeId === id);
@@ -891,6 +958,13 @@ function viewPlace(id) {
     <div class="pad" style="margin-top:12px">
       <button class="btn ghost sm" data-act="place-games" data-id="${p.id}">📦 Отметить, что лежит здесь</button>
     </div>
+
+    ${p.parentId && !parent ? `<div class="pad" style="margin-top:16px">
+      <div class="hint" style="margin:0 0 9px;color:var(--danger)">
+        ${esc(p.name)} потерял${p.kind === 'furniture' ? 'ся' : 'ось'}: комнату, в которой он${p.kind === 'furniture' ? '' : 'о'} был${p.kind === 'furniture' ? '' : 'о'}, удалили с другого устройства.
+      </div>
+      <button class="btn sm" data-act="reparent" data-id="${p.id}">📤 Перенести на место</button>
+    </div>` : ''}
 
     <div class="pad" style="margin-top:20px;display:flex;flex-direction:column;gap:9px">
       <button class="btn ghost sm" data-act="edit-place" data-id="${p.id}">✏️ Переименовать</button>
@@ -1168,6 +1242,7 @@ function openGame(id) {
    ШТОРКА: добавление игры
    ============================================================ */
 let searchTimer = null;
+let searchSeq = 0;
 
 function openAddGame() {
   openSheet(`
@@ -1192,9 +1267,13 @@ function openAddGame() {
       const v = q.value.trim();
       if (v.length < 2) { res.innerHTML = '<div class="hint" style="margin:12px 0">Введи хотя бы два символа.</div>'; return; }
       res.innerHTML = '<div class="spin"></div>';
+      // Ответы приходят не в том порядке, в каком уходили запросы: без
+      // этого счётчика выдача по «кар» могла перекрыть выдачу по «каркас».
+      const seq = ++searchSeq;
       searchTimer = setTimeout(async () => {
         try {
           const items = await teseraSearch(v);
+          if (seq !== searchSeq) return;         // ответ на устаревший запрос
           if (!items.length) {
             res.innerHTML = `<div class="hint" style="margin:12px 0">Ничего не нашлось.</div>
               <button class="btn ghost sm" data-manual="${esc(v)}">Добавить «${esc(v)}» вручную</button>`;
@@ -1213,7 +1292,8 @@ function openAddGame() {
             <button class="btn ghost sm" style="margin-top:12px" data-manual="${esc(v)}">Нет в списке — добавить вручную</button>`;
         } catch (err) {
           console.error(err);
-          res.innerHTML = `<div class="hint" style="margin:12px 0;color:var(--danger)">Не получилось связаться с tesera.ru. Проверь интернет.</div>
+          if (seq !== searchSeq) return;
+          res.innerHTML = `<div class="hint" style="margin:12px 0;color:var(--danger)">${esc(err.message)}</div>
             <button class="btn ghost sm" data-manual="${esc(v)}">Добавить «${esc(v)}» вручную</button>`;
         }
       }, 380);
@@ -1635,6 +1715,49 @@ function openPlaceGames(placeId) {
   draw();
 }
 
+/* ---------- Перенос потерянного места ---------- */
+function openReparent(placeId) {
+  const p = place(placeId);
+  if (!p) return;
+
+  if (p.kind === 'room') {                 // комната родителя иметь не должна
+    p.parentId = null; touch(p); save(); render();
+    toast('Комната восстановлена');
+    return;
+  }
+
+  const wantKind = p.kind === 'furniture' ? 'room' : 'furniture';
+  const inside = new Set(descendantIds(p.id));   // внутрь себя переносить нельзя
+  const cands = S.places
+    .filter(x => x.kind === wantKind && !inside.has(x.id))
+    .sort((a, b) => collator.compare(a.name, b.name));
+
+  openSheet(`
+    ${sheetHead(`Куда перенести «${p.name}»`)}
+    ${cands.length ? `<div class="list">${cands.map(c => `
+      <button class="row" data-reparent-to="${c.id}">
+        <span class="row-ico">${esc(c.icon)}</span>
+        <span class="row-main">
+          <span class="row-title">${esc(c.name)}</span>
+          <span class="row-sub">${esc(pathStr(c.id))}</span>
+        </span><span class="row-chev">›</span>
+      </button>`).join('')}</div>`
+    : `<div class="hint" style="margin:4px 16px 16px">
+        Подходящих мест нет — сначала создай ${wantKind === 'room' ? 'комнату' : 'мебель'}.
+      </div>`}
+  `, body => {
+    body.onclick = e => {
+      if (e.target.closest('[data-sh-close]')) { closeSheet(); return; }
+      const row = e.target.closest('[data-reparent-to]');
+      if (!row) return;
+      p.parentId = row.dataset.reparentTo;
+      touch(p); save();
+      closeSheet(); render();
+      toast(`Теперь: ${pathStr(p.id)}`);
+    };
+  });
+}
+
 /* ---------- Создание / переименование места ---------- */
 function promptPlace(kind, parentId, existing = null) {
   return new Promise(resolve => {
@@ -2043,8 +2166,25 @@ function importJSON() {
       try {
         const d = JSON.parse(rd.result);
         if (!Array.isArray(d.games) || !Array.isArray(d.places)) throw new Error('bad shape');
-        if (!confirm(`Заменить текущие данные на ${d.games.length} игр из файла?`)) return;
-        S = { ...blank(), ...d };
+
+        const warn = [`Заменить текущие данные на ${d.games.length} ${plural(d.games.length, 'игру', 'игры', 'игр')} из файла?`];
+        if (syncOn()) warn.push('', 'Устройства подключены к общей коллекции — загруженное заменит её и у них.');
+        if (!confirm(warn.join('\n'))) return;
+
+        const fresh = normalizeState(d);
+        // Без этого загрузка молча отменяется: у записей из файла старое
+        // время правки, и слияние вернёт то, что лежит в общем хранилище.
+        // Раз человек подтвердил замену — привезённое должно победить.
+        const t = now();
+        fresh.games.forEach((g, i) => { g.updatedAt = t + i; });
+        fresh.places.forEach((p, i) => { p.updatedAt = t + i; });
+        // Всё, чего в файле нет, помечаем удалённым — иначе оно приедет обратно.
+        [...S.games, ...S.places].forEach(x => {
+          if (!fresh.games.some(y => y.id === x.id) && !fresh.places.some(y => y.id === x.id))
+            fresh.trash[x.id] = t;
+        });
+
+        S = fresh;
         save(); render(); toast('Коллекция загружена');
       } catch (e) {
         console.error(e); toast('Файл не подошёл');
@@ -2203,6 +2343,7 @@ document.addEventListener('click', async e => {
     }
 
     case 'place-games': openPlaceGames(act.dataset.id); break;
+    case 'reparent': openReparent(act.dataset.id); break;
     case 'edit-tags': openEditTags(act.dataset.id); break;
     case 'edit-note': openEditNote(act.dataset.id); break;
 
