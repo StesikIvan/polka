@@ -36,7 +36,8 @@
   --safe-l: env(safe-area-inset-left, 0px);
   --safe-r: env(safe-area-inset-right, 0px);
 
-  --tabbar-h: 49px;   /* как у системных панелей: выше только съедает экран */
+  --tabbar-h: 56px;
+  --tab-inset: max(0px, calc(var(--safe-b) - 10px));
   --ease: cubic-bezier(.32,.72,0,1);
   /* Пружина с лёгким перелётом: движение перестаёт быть «выездом по линейке»
      и начинает ощущаться как у системных панелей. */
@@ -113,7 +114,7 @@ input, textarea { -webkit-user-select: text; user-select: text; }
   scroll-behavior: smooth;
 }
 
-#view { padding-bottom: calc(var(--tabbar-h) + var(--safe-b) + 24px); }
+#view { padding-bottom: calc(var(--tabbar-h) + var(--tab-inset) + 24px); }
 
 /* ============ Переходы между экранами ============
 
@@ -136,20 +137,22 @@ input, textarea { -webkit-user-select: text; user-select: text; }
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
   display: grid; grid-template-columns: 1fr 1fr 76px 1fr 1fr;
   align-items: center;
-  height: calc(var(--tabbar-h) + var(--safe-b));
-  padding-bottom: var(--safe-b);
+  /* Полосу дома обходим наполовину, а не целиком: полный отступ оставлял
+     под кнопками пустую ленту в треть высоты панели — панель словно висела,
+     не доходя до края. Десяти точек хватает, чтобы не спорить с полосой. */
+  height: calc(var(--tabbar-h) + var(--tab-inset));
+  padding-bottom: var(--tab-inset);
   background: var(--nav-bg);
   -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
   border-top: .5px solid var(--hair);
 }
 .tb-item {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
-  /* 10px здесь оправдан: подпись под значком, а не самостоятельный текст */
-  color: var(--tx-3); font-size: 10px; font-weight: 600; letter-spacing: -.02em;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  color: var(--tx-3); font-size: 11px; font-weight: 600; letter-spacing: -.02em;
   height: 100%;
   transition: color .18s;
 }
-.tb-ico { font-size: 19px; line-height: 1; filter: grayscale(1) opacity(.55); transition: filter .18s, transform .18s var(--ease); }
+.tb-ico { font-size: 21px; line-height: 1; filter: grayscale(1) opacity(.55); transition: filter .18s, transform .18s var(--ease); }
 .tb-item.on { color: var(--accent); }
 .tb-item.on .tb-ico { filter: none; transform: translateY(-1px) scale(1.06); }
 /* Красная точка на вкладке, пока синхронизация сломана */
@@ -163,12 +166,12 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 }
 .tb-fab {
   justify-self: center;
-  width: 46px; height: 46px; margin-top: -12px;
+  width: 52px; height: 52px; margin-top: -16px;
   border-radius: 50%;
   background: var(--accent); color: var(--accent-tx);
-  font-size: 24px; font-weight: 300; line-height: 1;
+  font-size: 26px; font-weight: 300; line-height: 1;
   display: grid; place-items: center;
-  box-shadow: 0 4px 16px rgba(0,0,0,.28);
+  box-shadow: 0 6px 18px rgba(0,0,0,.28);
   transition: transform .18s var(--ease);
 }
 .tb-fab:active { transform: scale(.9); }
@@ -600,7 +603,7 @@ input, textarea { -webkit-user-select: text; user-select: text; }
      ломался на три строки. */
   position: fixed; left: 12px; right: 12px; margin: 0 auto;
   width: -webkit-fit-content; width: fit-content;
-  bottom: calc(var(--tabbar-h) + var(--safe-b) + 18px);
+  bottom: calc(var(--tabbar-h) + var(--tab-inset) + 18px);
   transform: translateY(14px); z-index: 200;
   background: rgba(28,28,32,.94); color: #fff;
   -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);

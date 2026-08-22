@@ -66,7 +66,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 28';
+const BUILD = '2026-08-22 · 29';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -1040,9 +1040,15 @@ const SORTS = { title: 'А–Я', recent: 'Новые', rating: 'Рейтинг'
 /* Фильтр коллекции — прямой перебор без опроса.
    Опрос хорош, когда ты не знаешь, чего хочешь. А когда знаешь —
    «покажи всё на двоих до часа» — три вопроса только мешают. */
-const cFilter = { players: null, time: null, complexity: null, vibe: null, rating: null, unplayed: false };
+const cFilter = { players: null, time: null, complexity: null, vibe: null, rating: null, unplayed: false, tags: new Set() };
 
-const filterActive = () => Object.values(cFilter).filter(v => v !== null && v !== false).length;
+const filterActive = () =>
+  Object.entries(cFilter).filter(([k, v]) =>
+    k === 'tags' ? v.size : (v !== null && v !== false)).length;
+
+const clearFilter = () => Object.assign(cFilter, {
+  players: null, time: null, complexity: null, vibe: null, rating: null, unplayed: false, tags: new Set(),
+});
 
 function applyFilter(list) {
   const f = cFilter;
@@ -1052,6 +1058,7 @@ function applyFilter(list) {
   if (f.vibe)       list = list.filter(g => vibesOf(g).includes(f.vibe));
   if (f.rating)     list = list.filter(g => (g.myRating || 0) >= f.rating);
   if (f.unplayed)   list = list.filter(g => !playsOf(g.id).length);
+  if (f.tags.size)  list = list.filter(g => [...f.tags].every(t => (g.tags || []).includes(t)));
   return list;
 }
 
@@ -1082,10 +1089,10 @@ function openFilter() {
       ${sheetHead('Фильтр')}
       <div class="hint" style="margin:-4px 16px 12px">Показывать только те, что подходят сразу под всё отмеченное.</div>
 
-      ${row('Играем вдвоём, втроём…', PLAYER_BUCKETS.map(b => ({
+      ${row('Количество игроков', PLAYER_BUCKETS.map(b => ({
         key: 'players', v: b.v, label: b.label, on: cFilter.players === b.v, n: n({ players: b.v }) })))}
 
-      ${row('Сколько есть времени', [
+      ${row('Длина партии', [
         { v: 30,  label: 'до 30′' }, { v: 60, label: 'до часа' },
         { v: 120, label: 'до 2 ч' }, { v: 999, label: 'дольше' },
       ].map(o => ({ key: 'time', v: o.v, label: o.label, on: cFilter.time === o.v, n: n({ time: o.v }) })))}
@@ -1101,6 +1108,13 @@ function openFilter() {
 
       ${row('Особое', [{ key: 'unplayed', v: '1', label: 'Ещё не играли', on: cFilter.unplayed, n: n({ unplayed: true }) }])}
 
+      ${allTags().length ? `<div class="field">
+        <div class="field-lbl">Теги</div>
+        <button class="btn ghost sm" data-cf-tags style="justify-content:space-between;padding:0 14px">
+          <span>${cFilter.tags.size ? esc([...cFilter.tags].join(', ')) : 'Выбрать теги'}</span><span>›</span>
+        </button>
+      </div>` : ''}
+
       <div class="sh-actions">
         <button class="btn" data-cf-done>Показать ${applyFilter(collectionBase()).length}</button>
         ${filterActive() ? `<button class="btn ghost sm" data-cf-clear>Сбросить всё</button>` : ''}
@@ -1110,10 +1124,8 @@ function openFilter() {
         if (e.target.closest('[data-sh-close]') || e.target.closest('[data-cf-done]')) {
           closeSheet(); render(); return;
         }
-        if (e.target.closest('[data-cf-clear]')) {
-          Object.assign(cFilter, { players: null, time: null, complexity: null, vibe: null, rating: null, unplayed: false });
-          draw(); return;
-        }
+        if (e.target.closest('[data-cf-clear]')) { clearFilter(); draw(); return; }
+        if (e.target.closest('[data-cf-tags]')) { openFilterTags(draw); return; }
         const c = e.target.closest('[data-cf]');
         if (!c) return;
         const key = c.dataset.cf;
@@ -1122,6 +1134,42 @@ function openFilter() {
           const v = key === 'complexity' || key === 'rating' || key === 'time' ? +c.dataset.v : c.dataset.v;
           cFilter[key] = cFilter[key] === v ? null : v;   // повторный тап снимает
         }
+        draw();
+      };
+    }, { keepScroll: true });
+  };
+  draw();
+}
+
+/* Теги отдельным окном: их бывает три десятка, и вываливать все подряд
+   в общий список фильтра — значит утопить в них остальные условия. */
+function openFilterTags(back) {
+  const draw = () => {
+    openSheet(`
+      ${sheetHead('Теги', true)}
+      <div class="hint" style="margin:-4px 16px 12px">
+        Отмеченные должны быть у игры все сразу.${cFilter.tags.size ? '' : ' Пока ничего не выбрано.'}
+      </div>
+      <div class="field">
+        <div class="chips">${allTags().map(t => {
+          const on = cFilter.tags.has(t);
+          const cnt = collectionBase().filter(g => (g.tags || []).includes(t)).length;
+          return `<button class="chip ${on ? 'on' : ''}" data-ft="${esc(t)}">${esc(t)} <span style="opacity:.6">${cnt}</span></button>`;
+        }).join('')}</div>
+      </div>
+      <div class="sh-actions">
+        <button class="btn" data-ft-done>Готово</button>
+        ${cFilter.tags.size ? `<button class="btn ghost sm" data-ft-clear>Снять все</button>` : ''}
+      </div>
+    `, body => {
+      body.onclick = e => {
+        if (e.target.closest('[data-sh-back]') || e.target.closest('[data-ft-done]')
+            || e.target.closest('[data-sh-close]')) { back(); return; }
+        if (e.target.closest('[data-ft-clear]')) { cFilter.tags.clear(); draw(); return; }
+        const c = e.target.closest('[data-ft]');
+        if (!c) return;
+        const t = c.dataset.ft;
+        cFilter.tags.has(t) ? cFilter.tags.delete(t) : cFilter.tags.add(t);
         draw();
       };
     }, { keepScroll: true });
@@ -1438,6 +1486,33 @@ const PLAYER_BUCKETS = [
   { v: '5+',  label: 'Пятеро и больше', sub: '' },
 ];
 
+/* Какой повод вообще имеет смысл при таком составе.
+
+   Фильтровать третий вопрос по наличию совпадений оказалось мало: игра
+   на 1–8 человек честно попадает и в «пьянку», и в «большой компанией»,
+   поэтому играющему в одиночку предлагалась пьянка. Дело не в данных,
+   а в смысле — состав определяет повод, а не наоборот.
+
+   Порядок внутри списка тоже не случаен: первым идёт самый вероятный
+   повод для этого состава. */
+const VIBES_FOR_PLAYERS = {
+  '1':   [],                                       // соло — не повод, вопрос лишний
+  '2':   ['brains', 'geek', 'family'],             // дуэль, а не вечеринка
+  '3-4': ['brains', 'family', 'geek', 'party'],
+  '5+':  ['crowd', 'party', 'family', 'geek'],     // впятером в «битву умов» садятся редко
+};
+
+function vibeOptions() {
+  const allowed = VIBES_FOR_PLAYERS[quiz.players] || VIBES.map(v => v.id);
+  return allowed
+    .map(id => vibe(id))
+    .filter(v => v && quizMatches({ vibe: v.id }).length > 0);
+}
+
+// Сколько шагов в тесте на самом деле: обещать три и показать два — обман.
+const quizSteps = () =>
+  quiz.players ? (VIBES_FOR_PLAYERS[quiz.players] || []).length ? 3 : 2 : 3;
+
 function playersFit(g, bucket) {
   const lo = g.playersMin || 1;
   const hi = g.playersMax || lo;
@@ -1483,7 +1558,7 @@ function viewPick() {
     </div>`;
   }
 
-  const dots = n => `<div class="qdots">${[0, 1, 2].map(i =>
+  const dots = n => `<div class="qdots">${Array.from({ length: quizSteps() }, (_, i) =>
     `<span class="qdot ${i === n ? 'on' : ''}"></span>`).join('')}</div>`;
 
   /* --- Шаг 1: сколько игроков --- */
@@ -1509,23 +1584,23 @@ function viewPick() {
       </div>`;
   }
 
-  /* --- Шаг 3: что хотите устроить --- */
+  /* --- Шаг 3: повод --- */
   if (quiz.step === 2) {
-    const c = v => quizMatches({ vibe: v }).length;
-    // Показываем только то, что при уже данных ответах вообще возможно.
-    // Спрашивать у человека, играющего в одиночку, не хочет ли он пьянку
-    // на пятерых — издевательство, а не вопрос.
-    const live = VIBES.filter(v => c(v.id) > 0);
+    const live = vibeOptions();
 
-    if (!live.length) {           // выбирать не из чего — вопрос лишний
+    if (!live.length) {           // при этом составе повода не бывает — не спрашиваем
       quiz.vibe = 'any';
       quiz.step = 3;
       return viewPick();
     }
 
+    const c = v => quizMatches({ vibe: v }).length;
+    // «Устроить» подразумевает событие — вдвоём так не говорят.
+    const q = quiz.players === '2' ? 'Чего хочется?' : 'Что хотите устроить?';
+
     return header('Во что сыграть?', '', null, null, '') + dots(2) + `
       <div class="qback"><button class="back-btn" data-q-back><span class="chev">‹</span>Назад</button></div>
-      <div class="qhead">Что хотите устроить?</div>
+      <div class="qhead">${q}</div>
       <div class="pad">
         ${live.map(v => qopt('vibe', v.id, v.icon, v.label, v.sub, c(v.id))).join('')}
         ${qopt('vibe', 'any', '🤷', 'Неважно', '', c('any'))}
