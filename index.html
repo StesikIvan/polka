@@ -2,7 +2,10 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<!-- Ни maximum-scale, ни user-scalable=no: запрет масштабирования отрезает
+     людей со слабым зрением от приложения ради борьбы с зумом по двойному
+     тапу. Двойной тап лечится через touch-action в стилях. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Полка — где лежат настолки</title>
 <meta name="description" content="Каталог домашней коллекции настольных игр с картой хранения по квартире">
 <meta name="theme-color" content="#0e0f12" media="(prefers-color-scheme: dark)">

@@ -66,7 +66,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 23';
+const BUILD = '2026-08-22 · 24';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -954,6 +954,7 @@ sheetBody.addEventListener('click', e => {
    ============================================================ */
 const view = $('#view'), main = $('#main');
 const scrollMem = {};
+let navFrom = { route: null, depth: 0 };
 
 function go(hash) { location.hash = hash; }
 
@@ -974,7 +975,21 @@ function render() {
 
   const views = { collection: viewCollection, home: viewHome, place: viewPlace, pick: viewPick, stats: viewStats, settings: viewSettings };
   const fn = views[route] || viewCollection;
+  // Направление перехода: вглубь дерева — справа, обратно — слева,
+  // смена вкладки — всплытие. Считаем по глубине пути, а не по истории:
+  // так работает и кнопка «назад» в браузере, и наши ссылки.
+  const depth = (route === 'place' && arg) ? pathOf(arg).length : 0;
+  const moved = route !== navFrom.route || depth !== navFrom.depth;
+  const dir = !moved ? null
+    : depth > navFrom.depth ? 'v-fwd'
+    : depth < navFrom.depth && route === navFrom.route ? 'v-back'
+    : 'v-up';
+  navFrom = { route, depth };
+
+  view.classList.remove('v-fwd', 'v-back', 'v-up');
   view.innerHTML = fn(arg);
+  if (dir && !prefersCalm()) { void view.offsetWidth; view.classList.add(dir); }
+
   main.scrollTop = scrollMem[raw] || 0;
   updateStuck();
   renderSyncRow();
