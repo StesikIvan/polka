@@ -58,7 +58,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 15';
+const BUILD = '2026-08-22 · 17';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -625,6 +625,65 @@ function bestHit(hits, query) {
 async function teseraGame(alias) {
   const d = await teseraFetch(`/games/${encodeURIComponent(alias)}`);
   return d.game || null;
+}
+
+/* ---------- Дополнения ----------
+   Тесера отдаёт их в relateds базовой игры с флагом isAddition. Обратной
+   ссылки нет: у самого дополнения relateds пустой, поэтому «к какой игре»
+   мы храним у себя, а при добавлении дополнения напрямую — угадываем
+   по названию («Мрачная гавань: Забытые круги» → «Мрачная гавань»).
+
+   Список не храним, а тянем на лету: вышло новое дополнение — оно
+   появится само, без обновления приложения. За сессию кэшируем,
+   чтобы не дёргать сеть на каждое открытие карточки. */
+const additionsCache = new Map();
+
+async function getAdditions(alias) {
+  if (!alias) return [];
+  if (additionsCache.has(alias)) return additionsCache.get(alias);
+
+  const d = await teseraFetch(`/games/${encodeURIComponent(alias)}`);
+  const base = normTitle(d.game && d.game.title);
+
+  // Ни один признак поодиночке не работает. Флаг пропускает «Каркассон. Река»
+  // и «Колесо фортуны» — классические допы. Название пропускает те, что
+  // названы иначе. Берём объединение: у Каркассона это 23 коробки вместо 19,
+  // и при этом отсеиваются «Дети Каркассона» и англоязычные издания.
+  const list = (d.relateds || [])
+    .filter(x => x.alias && (x.isAddition || (base && normTitle(x.title).startsWith(base + ' '))))
+    .sort((a, b) => (a.year || 9999) - (b.year || 9999) || collator.compare(a.title, b.title));
+
+  additionsCache.set(alias, list);
+  return list;
+}
+
+const ownedByAlias = a =>
+  S.games.find(x => (x.alias || '').toLowerCase() === String(a || '').toLowerCase()) || null;
+
+/* Полагаться на флаг isAddition у самой игры нельзя: Тесера помечает
+   дополнениями и «Каркассон», и «Ужас Аркхэма. Карточная игра» — обе
+   базовые. Поэтому связь определяем по фактам, а не по флагу:
+   у базовой игры relateds не пустой, у дополнения — пустой,
+   а родителя ищем по началу названия. */
+
+// «Каркассон. Река» → «Каркассон». Самое длинное совпадение точнее:
+// «Ужас Аркхэма. Карточная игра: Карнавал» → «Ужас Аркхэма. Карточная игра»,
+// а не просто «Ужас Аркхэма».
+function guessBase(g) {
+  const t = normTitle(g.title);
+  if (!t) return null;
+  return S.games
+    .filter(x => x.id !== g.id && t.startsWith(normTitle(x.title) + ' '))
+    .sort((a, b) => normTitle(b.title).length - normTitle(a.title).length)[0] || null;
+}
+
+// Сначала связь, записанная при добавлении, потом догадка по названию.
+function baseOf(g) {
+  if (g.baseAlias) {
+    const found = ownedByAlias(g.baseAlias);
+    if (found) return found;
+  }
+  return guessBase(g);
 }
 
 function fromTesera(t) {
@@ -1238,6 +1297,31 @@ function openGame(id) {
       </div>
     </div>
 
+    ${(() => {
+      const base = baseOf(g);
+      // Блоки независимы: игра может быть и дополнением к чему-то,
+      // и сама иметь дополнения — как «Ужас Аркхэма. Карточная игра».
+      const toBase = base
+        ? `<div class="sh-pad" style="margin-top:16px">
+            <div class="field-lbl" style="margin-bottom:7px">Дополнение к игре</div>
+            <button class="row" data-game="${base.id}" style="border:.5px solid var(--hair);border-radius:var(--r);background:var(--bg-elev)">
+              ${base.photoUrl ? `<img class="row-thumb" src="${esc(thumb(base.photoUrl, 200))}" alt="">`
+                              : `<span class="row-ico" style="width:42px;height:42px">🎲</span>`}
+              <span class="row-main">
+                <span class="row-title">${esc(base.title)}</span>
+                <span class="row-sub">${esc(whereStr(base))}</span>
+              </span><span class="row-chev">›</span>
+            </button>
+          </div>`
+        : (g.baseTitle
+            ? `<div class="sh-pad" style="margin-top:16px">
+                 <div class="field-lbl" style="margin-bottom:7px">Дополнение к игре</div>
+                 <div class="hint" style="margin:0">«${esc(g.baseTitle)}» — её нет в коллекции.</div>
+               </div>`
+            : '');
+      return toBase + '<div class="sh-pad" id="gd-adds" style="margin-top:16px"></div>';
+    })()}
+
     <div class="sh-pad" style="margin-top:16px">
       <div class="field-lbl" style="margin-bottom:7px">Теги</div>
       <div class="chips" id="gd-tags">
@@ -1253,6 +1337,64 @@ function openGame(id) {
       <button class="btn ghost sm" data-act="del-game" data-id="${g.id}" style="color:var(--danger)">🗑 Удалить из коллекции</button>
     </div>
   `);
+
+  fillAdditions(g);
+}
+
+/* Список дополнений подгружается после открытия карточки: сеть не должна
+   задерживать показ того, что уже известно. */
+async function fillAdditions(g) {
+  // У настоящего дополнения relateds пустой — раздел просто не появится.
+  // Это надёжнее флага isAddition, которому у Тесеры верить нельзя.
+  if (!g.alias) return;
+  const box = $('#gd-adds');
+  if (!box) return;
+  box.innerHTML = '<div class="hint" style="margin:0">Смотрю дополнения…</div>';
+
+  let adds;
+  // Копия, а не сам кэш: ниже мы дописываем в список свои коробки,
+  // и без копии они накапливались бы при каждом открытии карточки.
+  try { adds = (await getAdditions(g.alias)).slice(); }
+  catch { if ($('#gd-adds')) $('#gd-adds').innerHTML = ''; return; }
+
+  const cur = $('#gd-adds');
+  if (!cur) return;                       // карточку успели закрыть
+
+  // Список Тесеры неполон: у Каркассона в нём есть «Река 2», а самой «Реки»
+  // нет. Свои коробки серии добавляем сами, иначе они не засчитывались бы.
+  const known = new Set(adds.map(a => (a.alias || '').toLowerCase()));
+  const baseT = normTitle(g.title);
+  S.games.forEach(x => {
+    if (x.id === g.id || known.has((x.alias || '').toLowerCase())) return;
+    if (baseT && normTitle(x.title).startsWith(baseT + ' '))
+      adds.push({ _ownId: x.id, alias: x.alias, title: x.title, photoUrl: x.photoUrl, year: x.year });
+  });
+  adds.sort((a, b) => (a.year || 9999) - (b.year || 9999) || collator.compare(a.title, b.title));
+
+  if (!adds.length) { cur.innerHTML = ''; return; }
+
+  // По id, а не по алиасу: у карточек, заведённых руками, алиаса нет,
+  // и пустая строка совпала бы с любой другой такой же.
+  const owned = a => a._ownId ? game(a._ownId) : (a.alias ? ownedByAlias(a.alias) : null);
+  const mine = adds.filter(owned);
+  cur.innerHTML = `
+    <div class="field-lbl" style="margin-bottom:7px">
+      Дополнения · ${mine.length} из ${adds.length}
+      <span style="text-transform:none;letter-spacing:0;font-weight:500">· серые у тебя не отмечены</span>
+    </div>
+    <div class="list" style="margin:0">${adds.map(a => {
+      const have = owned(a);
+      return `<button class="row" ${have ? `data-game="${have.id}"` : `data-add-exp="${esc(a.alias)}" data-base="${esc(g.id)}"`}
+                      style="${have ? '' : 'opacity:.5'}">
+        ${a.photoUrl ? `<img class="row-thumb" src="${esc(a.photoUrl)}" alt="" loading="lazy">`
+                     : `<span class="row-ico" style="width:42px;height:42px">🧩</span>`}
+        <span class="row-main">
+          <span class="row-title">${esc(a.title)}</span>
+          <span class="row-sub">${have ? esc(whereStr(have)) : (a.year ? a.year + ' · нет у тебя' : 'нет у тебя')}</span>
+        </span>
+        <span class="row-chev">${have ? '›' : '＋'}</span>
+      </button>`;
+    }).join('')}</div>`;
 }
 
 /* ============================================================
@@ -1483,14 +1625,103 @@ function openManualForm(preset = {}) {
   draw();
 }
 
+/* ============================================================
+   ДОПОЛНЕНИЯ ПРИ ДОБАВЛЕНИИ ИГРЫ
+
+   Сразу после базовой карточки спрашиваем, какие дополнения есть, и заводим
+   их карточки одну за другой. Место подставляем от базовой игры: допы почти
+   всегда лежат рядом, а часто и в той же коробке.
+   ============================================================ */
+async function offerAdditions(base) {
+  if (!base.alias) return;
+
+  let adds = [];
+  try { adds = await getAdditions(base.alias); } catch { return; }
+  const missing = adds.filter(a => !ownedByAlias(a.alias));
+  if (!missing.length) return;
+
+  const chosen = new Set();
+
+  const draw = () => openSheet(`
+    ${sheetHead('Дополнения')}
+    <div class="hint" style="margin:-4px 16px 12px">
+      У «${esc(base.title)}» ${missing.length === adds.length ? 'есть' : 'нашлось ещё'}
+      ${missing.length} ${plural(missing.length, 'дополнение', 'дополнения', 'дополнений')}.
+      Отметь те, что есть у тебя — заведём на них карточки.
+    </div>
+    <div class="list">${missing.map(a => {
+      const on = chosen.has(a.alias);
+      return `<button class="row" data-oa="${esc(a.alias)}" style="${on ? '' : 'opacity:.55'}">
+        ${a.photoUrl ? `<img class="row-thumb" src="${esc(a.photoUrl)}" alt="" loading="lazy">`
+                     : `<span class="row-ico" style="width:42px;height:42px">🧩</span>`}
+        <span class="row-main">
+          <span class="row-title">${esc(a.title)}</span>
+          <span class="row-sub">${a.year || ''}</span>
+        </span>
+        <span class="row-chev" style="${on ? 'color:var(--accent);opacity:1' : ''}">${on ? '✓' : '○'}</span>
+      </button>`;
+    }).join('')}</div>
+    <div class="sh-actions">
+      <button class="btn" data-oa-go ${chosen.size ? '' : 'disabled'}>
+        ${chosen.size ? `Завести ${chosen.size} ${plural(chosen.size, 'карточку', 'карточки', 'карточек')}` : 'Отметь, что есть'}
+      </button>
+      <button class="btn ghost sm" data-sh-close>Ни одного нет</button>
+    </div>
+  `, body => {
+    body.onclick = e => {
+      if (e.target.closest('[data-sh-close]')) { closeSheet(); return; }
+      const row = e.target.closest('[data-oa]');
+      if (row) {
+        const a = row.dataset.oa;
+        chosen.has(a) ? chosen.delete(a) : chosen.add(a);
+        draw();
+        return;
+      }
+      if (e.target.closest('[data-oa-go]') && chosen.size) {
+        addExpansionsInTurn(base, [...chosen]);
+      }
+    };
+  });
+
+  draw();
+}
+
+// Карточки заводятся по очереди: у каждого дополнения своё место и свои теги.
+async function addExpansionsInTurn(base, aliases) {
+  for (let i = 0; i < aliases.length; i++) {
+    let full;
+    openSheet(`${sheetHead('Загружаю…')}<div class="spin"></div>
+      <div class="hint" style="text-align:center">${i + 1} из ${aliases.length}</div>`);
+    try { full = await teseraGame(aliases[i]); }
+    catch (e) { toast(e.message); continue; }
+
+    const draft = fromTesera(full);
+    draft.isAddition = true;
+    draft.baseAlias = base.alias;
+    draft.baseTitle = base.title;
+    draft.placeId = base.placeId;          // допы почти всегда лежат с игрой
+    draft.kind = base.kind;
+
+    const saved = await new Promise(resolve => {
+      openGameForm(draft, {
+        title: `Дополнение ${i + 1} из ${aliases.length}`,
+        onDone: resolve,
+      });
+    });
+    if (saved === 'stop') break;
+  }
+  render();
+}
+
 /* ---------- Форма новой игры ---------- */
-function openGameForm(g) {
+function openGameForm(g, opts = {}) {
   const tagSuggest = [...new Set([...allTags(), ...PRESET_TAGS])];
 
   openSheet(`
-    ${sheetHead('Новая игра')}
+    ${sheetHead(opts.title || 'Новая игра')}
     <div style="text-align:center;padding:4px 0 14px">
-      ${g.photoUrl ? `<img class="gd-cover" src="${esc(thumb(g.photoUrl, 400))}" alt="">` : `<div class="gd-cover gcard-ph" style="display:grid;margin:0 auto">🎲</div>`}
+      ${g.photoUrl ? `<img class="gd-cover" src="${esc(thumb(g.photoUrl, 400))}" alt="">` : `<div class="gd-cover gcard-ph" style="display:grid;margin:0 auto">${g.baseTitle ? '🧩' : '🎲'}</div>`}
+      ${g.baseTitle ? `<div class="hint" style="margin:10px 16px 0">Дополнение к «${esc(g.baseTitle)}»</div>` : ''}
     </div>
 
     <div class="field">
@@ -1520,6 +1751,7 @@ function openGameForm(g) {
 
     <div class="sh-actions">
       <button class="btn" id="f-save">Добавить в коллекцию</button>
+      ${opts.onDone ? `<button class="btn ghost sm" id="f-skip">Пропустить это дополнение</button>` : ''}
       <div class="hint" style="margin:2px 0 0;text-align:center">
         Игроков, время, возраст и всё остальное можно будет поправить
         в карточке — «Изменить карточку».
@@ -1527,6 +1759,9 @@ function openGameForm(g) {
     </div>
   `, body => {
     const draft = { ...g, tags: [...(g.tags || [])] };
+
+    const skip = $('#f-skip', body);
+    if (skip) skip.addEventListener('click', () => opts.onDone('skip'));
 
     const paint = () => $$('#f-tags .chip', body).forEach(c => c.classList.toggle('on', draft.tags.includes(c.dataset.t)));
     paint();
@@ -1572,9 +1807,12 @@ function openGameForm(g) {
       const dup = findDuplicate(draft);
       if (dup && !confirm(`«${dup.title}» уже есть в коллекции — ${whereStr(dup)}.\nДобавить второй экземпляр?`)) return;
       saveGame(draft);
-      closeSheet();
       render();
       toast(`«${draft.title}» добавлена`);
+
+      if (opts.onDone) { opts.onDone('saved'); return; }   // очередь дополнений идёт дальше
+      closeSheet();
+      offerAdditions(draft);
     });
   });
 }
@@ -2430,6 +2668,24 @@ document.addEventListener('click', async e => {
     const tag = pt.dataset.ptag;
     quiz.tags.has(tag) ? quiz.tags.delete(tag) : quiz.tags.add(tag);
     render(); return;
+  }
+
+  // Добавить дополнение прямо из карточки базовой игры
+  const ae = t.closest('[data-add-exp]');
+  if (ae) {
+    const base = game(ae.dataset.base);
+    (async () => {
+      try {
+        const draft = fromTesera(await teseraGame(ae.dataset.addExp));
+        draft.isAddition = true;
+        if (base) {
+          draft.baseAlias = base.alias; draft.baseTitle = base.title;
+          draft.placeId = base.placeId; draft.kind = base.kind;
+        }
+        openGameForm(draft, { title: 'Дополнение' });
+      } catch (err) { toast(err.message); }
+    })();
+    return;
   }
 
   // Настроение в карточке игры
