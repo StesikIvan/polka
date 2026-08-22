@@ -66,7 +66,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 25';
+const BUILD = '2026-08-22 · 27';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -235,6 +235,17 @@ async function gistRead() {
   catch { return blank(); }
 }
 
+// Сбой сети приходит как TypeError «Failed to fetch», а испорченный ответ —
+// как «Failed to execute 'json' on 'Response'». Показывать такое человеку
+// нельзя: он видит тост и не понимает ни слова.
+function humanError(e) {
+  const m = String(e && e.message || e);
+  if (e instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(m))
+    return navigator.onLine ? 'Сервер не отвечает' : 'Нет интернета';
+  if (/json/i.test(m)) return 'Пришёл непонятный ответ';
+  return m;
+}
+
 // GitHub отвечает 403 и на нехватку прав, и на исчерпанный лимит запросов.
 // Разница принципиальная: в первом случае надо перевыпускать токен,
 // во втором — просто подождать.
@@ -326,13 +337,14 @@ async function syncNow({ silent = false } = {}) {
     cfg.lastSync = syncState.at; saveCfg();
     if (!silent) toast('Синхронизировано');
   } catch (e) {
-    syncState.error = e.message;
+    const msg = humanError(e);
+    syncState.error = msg;
     console.warn('sync', e);
     // О поломке нужно узнавать сразу, а не через неделю, обнаружив, что
     // телефон жены живёт своей жизнью. Один раз на каждую новую ошибку.
-    if (!silent || syncState.shown !== e.message) {
-      toast(e.message);
-      syncState.shown = e.message;
+    if (!silent || syncState.shown !== msg) {
+      toast(msg);
+      syncState.shown = msg;
     }
   } finally {
     syncState.busy = false;
@@ -555,7 +567,9 @@ const PERIODS = [
 function playsInPeriod(days) {
   if (!days) return S.plays.slice();
   const from = now() - days * DAY;
-  return S.plays.filter(p => p.at >= from);
+  // Верхняя граница нужна на случай записей с испорченной датой —
+  // из синхронизации или из старой копии.
+  return S.plays.filter(p => p.at >= from && p.at <= now());
 }
 
 function statsFor(days) {
@@ -707,7 +721,7 @@ async function teseraFetch(path, timeout = 12000) {
     return await r.json();
   } catch (e) {
     if (e.name === 'AbortError') throw new Error('Тесера не отвечает');
-    throw e;
+    throw new Error(humanError(e));
   } finally {
     clearTimeout(t);
   }
@@ -1884,7 +1898,7 @@ function openAddGame() {
         } catch (err) {
           console.error(err);
           if (seq !== searchSeq) return;
-          res.innerHTML = `<div class="hint" style="margin:12px 0;color:var(--danger)">${esc(err.message)}</div>
+          res.innerHTML = `<div class="hint" style="margin:12px 0;color:var(--danger)">${esc(humanError(err))}</div>
             <button class="btn ghost sm" data-manual="${esc(v)}">Добавить «${esc(v)}» вручную</button>`;
         }
       }, 380);
@@ -1906,7 +1920,7 @@ function openAddGame() {
           openGameForm(fromTesera(t));
         } catch (err) {
           console.error(err);
-          toast(err.message);
+          toast(humanError(err));
         }
       } else if (man) {
         openManualForm({ title: man.dataset.manual });
@@ -2062,7 +2076,7 @@ async function addExpansionsInTurn(base, aliases) {
     openSheet(`${sheetHead('Загружаю…')}<div class="spin"></div>
       <div class="hint" style="text-align:center">${i + 1} из ${aliases.length}</div>`);
     try { full = await teseraGame(aliases[i]); }
-    catch (e) { toast(e.message); continue; }
+    catch (e) { toast(humanError(e)); continue; }
 
     const draft = fromTesera(full);
     draft.isAddition = true;
@@ -2310,7 +2324,7 @@ function openFindExpansion(draft, onPick) {
                 </button>`).join('')}</div>`
             : '<div class="hint" style="margin:12px 0">Ничего не нашлось.</div>';
         } catch (err) {
-          if (my === seq) res.innerHTML = `<div class="hint" style="margin:12px 0;color:var(--danger)">${esc(err.message)}</div>`;
+          if (my === seq) res.innerHTML = `<div class="hint" style="margin:12px 0;color:var(--danger)">${esc(humanError(err))}</div>`;
         }
       }, 380);
     };
@@ -2804,7 +2818,10 @@ function openPlayForm(gameId, existing = null) {
       // Введённое подхватываем перед любой перерисовкой, иначе пропадёт.
       const capture = () => {
         const d = $('#pf-date', body).value;
-        if (d) draft.at = new Date(d + 'T12:00:00').getTime();
+        // Ограничение max у поля можно обойти вставкой, а партия из будущего
+        // попадала бы разом во все периоды статистики — и в «за неделю», и в
+        // «за год». Сыграть завтра нельзя, поэтому подрезаем сегодняшним днём.
+        if (d) draft.at = Math.min(new Date(d + 'T12:00:00').getTime(), now());
         const m = parseInt($('#pf-min', body).value, 10);
         draft.minutes = Number.isFinite(m) && m > 0 ? m : null;
         draft.note = $('#pf-note', body).value.trim();
@@ -3032,7 +3049,7 @@ function openEditGame(id) {
         toast('Данные обновлены');
       } catch (e) {
         console.error(e);
-        toast(e.message);
+        toast(humanError(e));
         reset.textContent = '↺ Вернуть данные с Тесеры';
       }
     });
@@ -3458,7 +3475,7 @@ document.addEventListener('click', async e => {
           draft.placeId = base.placeId; draft.kind = base.kind;
         }
         openGameForm(draft, { title: 'Дополнение' });
-      } catch (err) { toast(err.message); }
+      } catch (err) { toast(humanError(err)); }
     })();
     return;
   }
@@ -3629,7 +3646,7 @@ document.addEventListener('click', async e => {
         render();
         toast('Хранилище создано');
       } catch (e) {
-        console.error(e); toast(e.message);
+        console.error(e); toast(humanError(e));
       }
       break;
     }
