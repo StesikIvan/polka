@@ -66,7 +66,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 29';
+const BUILD = '2026-08-22 · 30';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
