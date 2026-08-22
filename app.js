@@ -66,7 +66,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 24';
+const BUILD = '2026-08-22 · 25';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -970,7 +970,7 @@ function render() {
     || (route === 'place' && el.dataset.tab === 'home')
     || (route === 'stats' && el.dataset.tab === 'settings')));
 
-  $('#sb-count-games').textContent = S.games.length || '';
+  $('#sb-count-games').textContent = S.games.filter(g => !g.wish).length || '';
   $('#sb-count-places').textContent = S.places.filter(p => p.kind === 'room').length || '';
 
   const views = { collection: viewCollection, home: viewHome, place: viewPlace, pick: viewPick, stats: viewStats, settings: viewSettings };
@@ -1014,6 +1014,10 @@ function updateStuck() {
 // ради которого коллекцию не открывают. Пока несыгрового нет, фильтр
 // ничего не отсекает и кнопок не показывает.
 const cState = { q: '', tags: new Set(), sort: 'title', kind: 'game' };
+
+// Порядок меняют редко — незачем держать под него отдельную ленту чипсов
+// поверх экрана. Кнопка в строке поиска перебирает три варианта.
+const SORTS = { title: 'А–Я', recent: 'Новые', rating: 'Рейтинг' };
 
 function collectionList() {
   // Хотелки живут отдельно и в коллекцию не подмешиваются: список желаемого
@@ -1075,6 +1079,7 @@ function viewCollection() {
     <div class="searchbar">
       <input type="search" id="c-q" placeholder="Название, тег или место" value="${esc(cState.q)}"
              autocomplete="off" autocorrect="off" spellcheck="false">
+      <button class="sort-btn" data-act="cycle-sort" title="Порядок">${SORTS[cState.sort]}</button>
     </div>
     ${(!cState.q.trim() && (nThings || nWish)) ? `<div class="chips scroll" style="padding-bottom:4px">
       <button class="chip ${cState.kind === 'game' ? 'on' : ''}" data-kindf="game">🎲 Настолки</button>
@@ -1082,13 +1087,9 @@ function viewCollection() {
       ${nThings ? `<button class="chip ${cState.kind === 'all' ? 'on' : ''}" data-kindf="all">Всё дома</button>` : ''}
       ${nWish ? `<button class="chip ${cState.kind === 'wish' ? 'on' : ''}" data-kindf="wish">🤍 Хочу купить · ${nWish}</button>` : ''}
     </div>` : ''}
-    <div class="chips scroll">
-      <button class="chip ${cState.sort === 'title' ? 'on' : ''}" data-sort="title">А–Я</button>
-      <button class="chip ${cState.sort === 'recent' ? 'on' : ''}" data-sort="recent">Новые</button>
-      <button class="chip ${cState.sort === 'rating' ? 'on' : ''}" data-sort="rating">Рейтинг</button>
-      ${tags.length ? '<span style="width:6px"></span>' : ''}
+    ${tags.length ? `<div class="chips scroll">
       ${tags.map(t => `<button class="chip ${cState.tags.has(t) ? 'on' : ''}" data-tag="${esc(t)}">${esc(t)}</button>`).join('')}
-    </div>
+    </div>` : ''}
     ${list.length ? gridHtml(list) : (() => {
       const near = cState.q.trim() ? fuzzyCollection(cState.q) : [];
       return `<div class="empty" style="padding-bottom:16px">
@@ -1143,8 +1144,10 @@ function emptyStart() {
 /* ---------- Квартира ---------- */
 function viewHome() {
   const rooms = S.places.filter(p => p.kind === 'room').sort((a, b) => collator.compare(a.name, b.name));
-  const homeless = S.games.filter(g => !g.placeId || !place(g.placeId));
-  const lent = S.games.filter(g => g.lentTo);
+  // Хотелки в «без места» не попадают: их у человека нет, класть нечего.
+  const atHome = S.games.filter(g => !g.wish);
+  const homeless = atHome.filter(g => !g.placeId || !place(g.placeId));
+  const lent = atHome.filter(g => g.lentTo);
   const lost = orphanPlaces();
 
   if (!rooms.length && !lost.length) {
@@ -1169,7 +1172,7 @@ function viewHome() {
     </a>`;
   }).join('');
 
-  return header('Квартира', `${S.games.length} ${plural(S.games.length, 'игра', 'игры', 'игр')} по ${rooms.length} ${plural(rooms.length, 'комнате', 'комнатам', 'комнатам')}`) + `
+  return header('Квартира', `${atHome.length} ${plural(atHome.length, 'коробка', 'коробки', 'коробок')} по ${rooms.length} ${plural(rooms.length, 'комнате', 'комнатам', 'комнатам')}`) + `
     ${roomRows ? `<div class="list">${roomRows}</div>` : ''}
     <div class="pad" style="margin-top:12px">
       <button class="btn ghost sm" data-act="add-room">＋ Добавить комнату</button>
@@ -1249,8 +1252,11 @@ function viewPlace(id) {
 
   return header(
     `${p.icon} ${p.name}`,
-    `${meta.label}${parent ? ' · ' + pathStr(parent.id) : ''} · ${deep} ${plural(deep, 'игра', 'игры', 'игр')}`,
-    backHref, parent ? parent.name : 'Квартира'
+    `${meta.label}${parent ? ' · ' + pathStr(parent.id) : ''} · ${deep} ${plural(deep, 'коробка', 'коробки', 'коробок')}`,
+    backHref, parent ? parent.name : 'Квартира',
+    // Кнопки действий раньше стояли под сеткой. На полке с полусотней коробок
+    // до них приходилось листать целый экран — теперь они в шапке.
+    `<button class="hdr-btn" data-act="place-menu" data-id="${p.id}" aria-label="Действия с местом" title="Действия">⋯</button>`
   ) + `
     ${kids.length ? `<div class="sect-title">${p.kind === 'room' ? 'Мебель' : 'Места'}</div><div class="list">${kidRows}</div>` : ''}
 
@@ -1260,26 +1266,39 @@ function viewPlace(id) {
       </button>
     </div>` : ''}
 
-    <div class="sect-title">Лежат здесь${here.length ? ` · ${here.length}` : ''}</div>
-    ${here.length ? gridHtml(here, false) : `
-      <div class="pad"><div class="hint" style="margin:0 0 4px">Прямо на этом уровне игр нет${kids.length ? ' — загляни внутрь' : ''}.</div></div>`}
-
-    <div class="pad" style="margin-top:12px">
-      <button class="btn ghost sm" data-act="place-games" data-id="${p.id}">📦 Отметить, что лежит здесь</button>
-    </div>
-
     ${p.parentId && !parent ? `<div class="pad" style="margin-top:16px">
-      <div class="hint" style="margin:0 0 9px;color:var(--danger)">
+      <div class="hint" style="margin:0 0 8px;color:var(--danger)">
         ${esc(p.name)} потерял${p.kind === 'furniture' ? 'ся' : 'ось'}: комнату, в которой он${p.kind === 'furniture' ? '' : 'о'} был${p.kind === 'furniture' ? '' : 'о'}, удалили с другого устройства.
       </div>
       <button class="btn sm" data-act="reparent" data-id="${p.id}">📤 Перенести на место</button>
     </div>` : ''}
 
-    <div class="pad" style="margin-top:20px;display:flex;flex-direction:column;gap:9px">
+    <div class="sect-title">Лежат здесь${here.length ? ` · ${here.length}` : ''}</div>
+    <div class="pad" style="margin-bottom:12px">
+      <button class="btn ghost sm" data-act="place-games" data-id="${p.id}">📦 Отметить, что лежит здесь</button>
+    </div>
+    ${here.length ? gridHtml(here, false) : `
+      <div class="pad"><div class="hint" style="margin:0 0 4px">Прямо на этом уровне коробок нет${kids.length ? ' — загляни внутрь' : ''}.</div></div>`}
+  `;
+}
+
+/* Переименование и удаление живут в меню шапки: под сеткой из полусотни
+   коробок до них было не добраться. */
+function openPlaceMenu(id) {
+  const p = place(id); if (!p) return;
+  const meta = KINDS[p.kind];
+  const n = gamesIn(p.id).length;
+
+  openSheet(`
+    ${sheetHead(`${p.icon} ${p.name}`)}
+    <div class="hint" style="margin:-4px 16px 16px">${esc(meta.label)}${n ? ` · ${n} ${plural(n, 'коробка', 'коробки', 'коробок')} внутри` : ' · пусто'}</div>
+    <div class="sh-actions">
+      <button class="btn ghost sm" data-act="place-games" data-id="${p.id}">📦 Отметить, что лежит здесь</button>
+      ${meta.childKind ? `<button class="btn ghost sm" data-act="add-child" data-parent="${p.id}" data-kind="${meta.childKind}">＋ Добавить ${esc(meta.childLabel)}</button>` : ''}
       <button class="btn ghost sm" data-act="edit-place" data-id="${p.id}">✏️ Переименовать</button>
       <button class="btn ghost sm" data-act="del-place" data-id="${p.id}" style="color:var(--danger)">🗑 Удалить ${esc(meta.label.toLowerCase())}</button>
     </div>
-  `;
+  `);
 }
 
 /* ============================================================
@@ -1436,6 +1455,9 @@ function viewStats() {
   };
   const top = s.top.slice().sort(sorters[stState.sort]);
   const maxCount = top.length ? Math.max(...top.map(x => x.count)) : 1;
+  // Когда у всех по одной партии, полоски одинаковой длины ничего не
+  // сравнивают — только шумят. Показываем их, только когда есть разброс.
+  const showBars = maxCount > 1 && top.some(x => x.count !== maxCount);
 
   return header('Статистика', `${S.plays.length} ${plural(S.plays.length, 'партия', 'партии', 'партий')} за всё время`, null, null,
     `<button class="hdr-btn" data-act="log-play" aria-label="Записать партию" title="Записать партию">＋</button>`) + `
@@ -1463,7 +1485,7 @@ function viewStats() {
           <span class="row-main">
             <span class="row-title">${esc(x.game.title)}</span>
             <span class="row-sub">${x.count} ${plural(x.count, 'партия', 'партии', 'партий')} · ${esc(hoursStr(x.minutes))}</span>
-            <span class="bar"><span class="bar-fill" style="width:${Math.round(x.count / maxCount * 100)}%"></span></span>
+            ${showBars ? `<span class="bar"><span class="bar-fill" style="width:${Math.round(x.count / maxCount * 100)}%"></span></span>` : ''}
           </span>
           <span class="row-val" style="font-weight:750;color:var(--tx)">${stState.sort === 'minutes' ? esc(hoursStr(x.minutes)) : x.count}</span>
         </button>`).join('')}</div>` : `
@@ -1509,7 +1531,9 @@ function viewSettings() {
   const rooms = S.places.filter(p => p.kind === 'room').length;
   const furn  = S.places.filter(p => p.kind === 'furniture').length;
   const spots = S.places.filter(p => p.kind === 'spot').length;
-  const noPlace = S.games.filter(g => !g.placeId || !place(g.placeId)).length;
+  // Считаем только то, что дома: хотелки — не коллекция.
+  const atHome = S.games.filter(g => !g.wish);
+  const noPlace = atHome.filter(g => !g.placeId || !place(g.placeId)).length;
 
   const week = playsInPeriod(7).length;
 
@@ -1528,7 +1552,7 @@ function viewSettings() {
     </div>
 
     <div class="stat-row" style="margin-top:18px">
-      <div class="stat"><div class="stat-v">${S.games.length}</div><div class="stat-l">игр</div></div>
+      <div class="stat"><div class="stat-v">${atHome.length}</div><div class="stat-l">коробок дома</div></div>
       <div class="stat"><div class="stat-v">${rooms}</div><div class="stat-l">комнат</div></div>
       <div class="stat"><div class="stat-v">${furn + spots}</div><div class="stat-l">мест хранения</div></div>
     </div>
@@ -1620,23 +1644,6 @@ function openGame(id) {
                     : g.year ? `<div class="gd-orig">${g.year}</div>` : ''}
     </div>
 
-    <div class="facts">
-      <div class="fact"><div class="fact-v">${esc(playersStr(g))}</div><div class="fact-l">игроков</div></div>
-      <div class="fact"><div class="fact-v">${esc(timeStr(g))}</div><div class="fact-l">партия</div></div>
-      <div class="fact"><div class="fact-v">${plays.length || '—'}</div><div class="fact-l">сыграно</div></div>
-      <div class="fact"><div class="fact-v">${g.myRating ? g.myRating : (g.rating ? g.rating.toFixed(1) : '—')}</div><div class="fact-l">${g.myRating ? 'моя оценка' : 'рейтинг'}</div></div>
-    </div>
-
-    <div class="sh-pad" style="margin-top:16px">
-      <div class="field-lbl" style="margin-bottom:7px">Моя оценка</div>
-      <div class="chips">
-        ${[1,2,3,4,5,6,7,8,9,10].map(n =>
-          `<button class="chip ${g.myRating === n ? 'on' : ''}" data-rate="${n}" data-gid="${g.id}"
-                   style="min-width:38px;justify-content:center">${n}</button>`).join('')}
-      </div>
-      ${g.myRating ? `<div class="hint" style="margin:8px 0 0">Нажми ту же цифру, чтобы снять оценку.</div>` : ''}
-    </div>
-
     ${g.wish ? `
       <div class="where-card" style="cursor:default">
         <span class="where-pin">🤍</span>
@@ -1661,8 +1668,25 @@ function openGame(id) {
       <span class="row-chev">›</span>
     </button>`}
 
+    <div class="facts">
+      <div class="fact"><div class="fact-v">${esc(playersStr(g))}</div><div class="fact-l">игроков</div></div>
+      <div class="fact"><div class="fact-v">${esc(timeStr(g))}</div><div class="fact-l">партия</div></div>
+      <div class="fact"><div class="fact-v">${plays.length || '—'}</div><div class="fact-l">сыграно</div></div>
+      <div class="fact"><div class="fact-v">${g.myRating ? g.myRating : (g.rating ? g.rating.toFixed(1) : '—')}</div><div class="fact-l">${g.myRating ? 'моя оценка' : 'рейтинг'}</div></div>
+    </div>
+
+    <div class="sh-pad" style="margin-top:16px">
+      <div class="field-lbl" style="margin-bottom:8px">
+        Моя оценка ${g.myRating ? '<span style="text-transform:none;letter-spacing:0;font-weight:500">· нажми ту же цифру, чтобы снять</span>' : ''}
+      </div>
+    </div>
+    <div class="chips scroll rate-row">
+      ${[1,2,3,4,5,6,7,8,9,10].map(n =>
+        `<button class="chip rate ${g.myRating === n ? 'on' : ''}" data-rate="${n}" data-gid="${g.id}">${n}</button>`).join('')}
+    </div>
+
     <div class="sh-pad">
-      <div class="field-lbl" style="margin-bottom:7px">
+      <div class="field-lbl" style="margin-bottom:8px">
         Настроение ${vibeIsManual(g) ? '' : '<span style="text-transform:none;letter-spacing:0;font-weight:500">· определено само, можно поправить</span>'}
       </div>
       <div class="chips">
@@ -3383,6 +3407,14 @@ document.addEventListener('click', async e => {
   const sortBtn = t.closest('[data-sort]');
   if (sortBtn) { cState.sort = sortBtn.dataset.sort; render(); return; }
 
+  if (t.closest('[data-act="cycle-sort"]')) {
+    const keys = Object.keys(SORTS);
+    cState.sort = keys[(keys.indexOf(cState.sort) + 1) % keys.length];
+    render();
+    toast(SORTS[cState.sort]);
+    return;
+  }
+
   const kindBtn = t.closest('[data-kindf]');
   if (kindBtn) { cState.kind = kindBtn.dataset.kindf; render(); return; }
 
@@ -3542,6 +3574,7 @@ document.addEventListener('click', async e => {
     }
 
     case 'log-play': openPlayPicker(); break;
+    case 'place-menu': openPlaceMenu(act.dataset.id); break;
     case 'place-games': openPlaceGames(act.dataset.id); break;
     case 'reparent': openReparent(act.dataset.id); break;
     case 'edit-tags': openEditTags(act.dataset.id); break;
