@@ -58,7 +58,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 14';
+const BUILD = '2026-08-22 · 15';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -456,6 +456,17 @@ function undoLast() {
 
 /* ---------- Операции с играми ---------- */
 const game = id => S.games.find(g => g.id === id) || null;
+
+// Дубликаты ловим и по алиасу Тесеры, и по названию: одну и ту же игру
+// легко завести дважды — с Тесеры и руками.
+function findDuplicate(g) {
+  const alias = (g.alias || '').toLowerCase();
+  const title = normTitle(g.title);
+  return S.games.find(x => x.id !== g.id && (
+    (alias && (x.alias || '').toLowerCase() === alias) ||
+    (title && normTitle(x.title) === title)
+  )) || null;
+}
 
 function allTags() {
   const set = new Set();
@@ -1129,6 +1140,11 @@ function viewSettings() {
           <span class="row-main"><span class="row-title">Подключить ещё устройство</span>
           <span class="row-sub">Ссылка для телефона жены или второго телефона</span></span><span class="row-chev">›</span>
         </button>
+        <button class="row" data-act="sync-new">
+          <span class="row-ico">🆕</span>
+          <span class="row-main"><span class="row-title">Создать новое хранилище</span>
+          <span class="row-sub">Отдельная коллекция с чистого листа</span></span><span class="row-chev">›</span>
+        </button>
         <button class="row danger" data-act="sync-off">
           <span class="row-ico">⛓️‍💥</span>
           <span class="row-main"><span class="row-title">Отключить это устройство</span>
@@ -1232,6 +1248,7 @@ function openGame(id) {
     <div class="sh-actions">
       <button class="btn ghost sm" data-act="edit-tags" data-id="${g.id}">🏷 Изменить теги</button>
       <button class="btn ghost sm" data-act="edit-note" data-id="${g.id}">📝 Заметка и «одолжена»</button>
+      <button class="btn ghost sm" data-act="edit-game" data-id="${g.id}">✏️ Изменить карточку</button>
       ${g.alias ? `<a class="btn ghost sm" href="https://tesera.ru/game/${esc(g.alias)}" target="_blank" rel="noopener">↗︎ Открыть на Tesera</a>` : ''}
       <button class="btn ghost sm" data-act="del-game" data-id="${g.id}" style="color:var(--danger)">🗑 Удалить из коллекции</button>
     </div>
@@ -1279,16 +1296,19 @@ function openAddGame() {
               <button class="btn ghost sm" data-manual="${esc(v)}">Добавить «${esc(v)}» вручную</button>`;
             return;
           }
-          res.innerHTML = `<div class="list" style="margin:0">${items.map(it => `
-            <button class="row" data-alias="${esc(it.alias)}">
+          res.innerHTML = `<div class="list" style="margin:0">${items.map(it => {
+            const have = S.games.find(x => (x.alias || '').toLowerCase() === (it.alias || '').toLowerCase());
+            return `
+            <button class="row" data-alias="${esc(it.alias)}" ${have ? 'data-have="1"' : ''} style="${have ? 'opacity:.6' : ''}">
               ${it.photoUrl ? `<img class="row-thumb" src="${esc(it.photoUrl)}" alt="" loading="lazy">`
                             : `<span class="row-ico" style="width:42px;height:42px">🎲</span>`}
               <span class="row-main">
                 <span class="row-title">${esc(it.title || it.value)}</span>
-                <span class="row-sub">${esc(it.title2 || '')}</span>
+                <span class="row-sub">${have ? '✓ уже в коллекции · ' + esc(whereStr(have)) : esc(it.title2 || '')}</span>
               </span>
-              <span class="row-chev">＋</span>
-            </button>`).join('')}</div>
+              <span class="row-chev">${have ? '✓' : '＋'}</span>
+            </button>`;
+          }).join('')}</div>
             <button class="btn ghost sm" style="margin-top:12px" data-manual="${esc(v)}">Нет в списке — добавить вручную</button>`;
         } catch (err) {
           console.error(err);
@@ -1303,13 +1323,19 @@ function openAddGame() {
       const row = e.target.closest('[data-alias]');
       const man = e.target.closest('[data-manual]');
       if (row) {
+        // Предупреждаем до загрузки карточки, а не после сохранения:
+        // одну и ту же коробку легко завести дважды.
+        if (row.dataset.have) {
+          const t = row.querySelector('.row-title').textContent;
+          if (!confirm(`«${t}» уже есть в коллекции.\nДобавить второй экземпляр?`)) return;
+        }
         res.innerHTML = '<div class="spin"></div>';
         try {
           const t = await teseraGame(row.dataset.alias);
           openGameForm(fromTesera(t));
         } catch (err) {
           console.error(err);
-          toast('Не удалось загрузить карточку');
+          toast(err.message);
         }
       } else if (man) {
         openManualForm({ title: man.dataset.manual });
@@ -1443,6 +1469,8 @@ function openManualForm(preset = {}) {
       $('#mf-save', body).addEventListener('click', () => {
         capture();
         if (!draft.title) { toast('Без названия не сохранить'); $('#mf-title', body).focus(); return; }
+        const dup = findDuplicate(draft);
+        if (dup && !confirm(`«${dup.title}» уже есть в коллекции — ${whereStr(dup)}.\nДобавить второй экземпляр?`)) return;
         saveGame(draft);
         // Иначе техника пропадёт из виду сразу после сохранения: коллекция
         // по умолчанию открыта на настолках.
@@ -1492,6 +1520,10 @@ function openGameForm(g) {
 
     <div class="sh-actions">
       <button class="btn" id="f-save">Добавить в коллекцию</button>
+      <div class="hint" style="margin:2px 0 0;text-align:center">
+        Игроков, время, возраст и всё остальное можно будет поправить
+        в карточке — «Изменить карточку».
+      </div>
     </div>
   `, body => {
     const draft = { ...g, tags: [...(g.tags || [])] };
@@ -1537,6 +1569,8 @@ function openGameForm(g) {
 
     $('#f-save', body).addEventListener('click', () => {
       capture();
+      const dup = findDuplicate(draft);
+      if (dup && !confirm(`«${dup.title}» уже есть в коллекции — ${whereStr(dup)}.\nДобавить второй экземпляр?`)) return;
       saveGame(draft);
       closeSheet();
       render();
@@ -1849,7 +1883,7 @@ function openEditTags(id) {
   });
 }
 
-/* ---------- Заметка + одолжена ---------- */
+/* ---------- Заметка + одолжена (быстрый путь) ---------- */
 function openEditNote(id) {
   const g = game(id); if (!g) return;
   openSheet(`
@@ -1868,6 +1902,137 @@ function openEditNote(id) {
       g.note = $('#en-note', body).value.trim();
       g.lentTo = $('#en-lent', body).value.trim();
       saveGame(g); closeSheet(); render(); toast('Сохранено');
+    });
+  });
+}
+
+/* ============================================================
+   ШТОРКА: правка карточки
+
+   Данные с Тесеры не истина в последней инстанции: там бывает и неверное
+   число игроков, и время «по коробке», далёкое от реальности за твоим
+   столом. Карточка живёт в твоей библиотеке — значит и править её должен ты.
+   ============================================================ */
+function openEditGame(id) {
+  const g = game(id); if (!g) return;
+
+  const numRow = (label, a, b, hint) => `
+    <div class="field">
+      <div class="field-lbl">${label}</div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <input type="number" id="${a.id}" min="${a.min}" max="${a.max}" placeholder="от" value="${a.v || ''}" style="flex:1">
+        <span style="color:var(--tx-3)">—</span>
+        <input type="number" id="${b.id}" min="${b.min}" max="${b.max}" placeholder="до" value="${b.v || ''}" style="flex:1">
+      </div>
+      ${hint ? `<div class="hint" style="margin:8px 0 0">${hint}</div>` : ''}
+    </div>`;
+
+  openSheet(`
+    ${sheetHead('Изменить карточку')}
+    <div class="hint" style="margin:-4px 16px 14px">
+      Правки живут только в твоей коллекции и на твоих устройствах —
+      на Тесеру ничего не уходит. Пустое поле значит «неизвестно».
+    </div>
+
+    <div class="field">
+      <div class="field-lbl">Название</div>
+      <input type="text" id="eg-title" value="${esc(g.title)}">
+    </div>
+    <div class="field">
+      <div class="field-lbl">Оригинальное название</div>
+      <input type="text" id="eg-orig" value="${esc(g.titleOrig || '')}" placeholder="Carcassonne">
+    </div>
+
+    <div class="field">
+      <div class="field-lbl">Что это</div>
+      <div class="seg">
+        <button data-ekind="game"  class="${g.kind !== 'thing' ? 'on' : ''}">Настолка</button>
+        <button data-ekind="thing" class="${g.kind === 'thing' ? 'on' : ''}">Другое</button>
+      </div>
+    </div>
+
+    ${numRow('Игроков', { id:'eg-pmin', min:1, max:99, v:g.playersMin }, { id:'eg-pmax', min:1, max:99, v:g.playersMax })}
+    ${numRow('Партия, минут', { id:'eg-tmin', min:1, max:999, v:g.playtimeMin }, { id:'eg-tmax', min:1, max:999, v:g.playtimeMax })}
+
+    <div class="field">
+      <div class="field-lbl">Возраст, от</div>
+      <input type="number" id="eg-age" min="1" max="21" value="${g.ageMin || ''}" placeholder="не указан">
+    </div>
+
+    <div class="field">
+      <div class="field-lbl">Объяснять правила, минут</div>
+      <input type="number" id="eg-learn" min="1" max="240" value="${g.timeToLearn || ''}" placeholder="не указано">
+      <div class="hint" style="margin:8px 0 0">
+        По этому полю считается сложность и подбор «попроще / посложнее».
+        Сейчас: <b>${COMPLEXITY_LABEL[complexityOf(g)]}</b>.
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="field-lbl">Год</div>
+      <input type="number" id="eg-year" min="1900" max="2100" value="${g.year || ''}" placeholder="не указан">
+    </div>
+
+    <div class="field">
+      <div class="field-lbl">Заметка</div>
+      <textarea id="eg-note" placeholder="В глубине, за коробкой с гирляндой">${esc(g.note || '')}</textarea>
+    </div>
+    <div class="field">
+      <div class="field-lbl">Одолжена (кому)</div>
+      <input type="text" id="eg-lent" value="${esc(g.lentTo || '')}" placeholder="Пусто — значит дома">
+    </div>
+
+    <div class="sh-actions">
+      <button class="btn" id="eg-ok">Сохранить</button>
+      ${g.alias ? `<button class="btn ghost sm" id="eg-reset">↺ Вернуть данные с Тесеры</button>` : ''}
+    </div>
+  `, body => {
+    let kind = g.kind === 'thing' ? 'thing' : 'game';
+    $$('[data-ekind]', body).forEach(b => b.addEventListener('click', () => {
+      kind = b.dataset.ekind;
+      $$('[data-ekind]', body).forEach(x => x.classList.toggle('on', x.dataset.ekind === kind));
+    }));
+
+    const num = sel => {
+      const v = parseInt($(sel, body).value, 10);
+      return Number.isFinite(v) && v > 0 ? v : null;
+    };
+
+    $('#eg-ok', body).addEventListener('click', () => {
+      g.title = $('#eg-title', body).value.trim() || g.title;
+      g.titleOrig = $('#eg-orig', body).value.trim();
+      g.kind = kind === 'thing' ? 'thing' : undefined;
+      g.playersMin = num('#eg-pmin');   g.playersMax = num('#eg-pmax');
+      g.playtimeMin = num('#eg-tmin');  g.playtimeMax = num('#eg-tmax');
+      g.ageMin = num('#eg-age');
+      g.timeToLearn = num('#eg-learn');
+      g.year = num('#eg-year');
+      g.note = $('#eg-note', body).value.trim();
+      g.lentTo = $('#eg-lent', body).value.trim();
+      saveGame(g);
+      closeSheet(); render(); toast('Карточка изменена');
+    });
+
+    const reset = $('#eg-reset', body);
+    if (reset) reset.addEventListener('click', async () => {
+      if (!confirm('Заново скачать данные с Тесеры?\nТвои правки полей пропадут. Место, теги, настроение и заметка останутся.')) return;
+      reset.textContent = 'Скачиваю…';
+      try {
+        const fresh = fromTesera(await teseraGame(g.alias));
+        // Своё бережём: место, теги, настроение, заметка и «одолжена» —
+        // это то, чего на Тесере нет и быть не может.
+        Object.assign(g, fresh, {
+          id: g.id, placeId: g.placeId, tags: g.tags, vibes: g.vibes,
+          note: g.note, lentTo: g.lentTo, kind: g.kind, addedAt: g.addedAt,
+        });
+        saveGame(g);
+        closeSheet(); render(); openGame(g.id);
+        toast('Данные обновлены');
+      } catch (e) {
+        console.error(e);
+        toast(e.message);
+        reset.textContent = '↺ Вернуть данные с Тесеры';
+      }
     });
   });
 }
@@ -2346,6 +2511,7 @@ document.addEventListener('click', async e => {
     case 'reparent': openReparent(act.dataset.id); break;
     case 'edit-tags': openEditTags(act.dataset.id); break;
     case 'edit-note': openEditNote(act.dataset.id); break;
+    case 'edit-game': openEditGame(act.dataset.id); break;
 
     case 'del-game': {
       const g = game(act.dataset.id); if (!g) break;
@@ -2372,6 +2538,33 @@ document.addEventListener('click', async e => {
     }
 
     case 'sync-setup': openSyncSetup(); break;
+
+    // Своё хранилище — только своим аккаунтом: токен GitHub даёт доступ
+    // ко всем гистам, поэтому чужую коллекцию под своим токеном не отделить.
+    case 'sync-new': {
+      if (!canWrite()) { toast('Сначала нужен токен'); break; }
+      if (!confirm('Создать новое пустое хранилище?\n\nЭто устройство переключится на него, а нынешняя общая коллекция останется на месте — к ней можно вернуться по старой ссылке.\n\nСохрани копию заранее, если она нужна.')) break;
+      try {
+        const r = await fetch('https://api.github.com/gists', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            description: 'Полка — коллекция настолок',
+            public: false,
+            files: { [GIST_FILE]: { content: JSON.stringify(blank()) } },
+          }),
+        });
+        if (!r.ok) throw new Error(githubError(r));
+        const d = await r.json();
+        cfg.gistId = d.id; cfg.lastSync = 0; saveCfg();
+        S = blank(); save();
+        render();
+        toast('Хранилище создано');
+      } catch (e) {
+        console.error(e); toast(e.message);
+      }
+      break;
+    }
     case 'sync-invite': openInvite(); break;
     case 'sync-now': syncNow(); break;
 

@@ -361,7 +361,8 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 /* ============ Поля ============ */
 .field { margin: 0 16px 12px; }
 .field-lbl { font-size: 12.5px; font-weight: 700; color: var(--tx-3); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
-.field input[type=text], .field textarea, .field select {
+.field input[type=text], .field input[type=number], .field input[type=password],
+.field input[type=search], .field textarea, .field select {
   width: 100%; border-radius: 12px; border: .5px solid var(--hair);
   background: var(--bg-elev); padding: 11px 13px; outline: none;
   font-size: 16px; transition: border-color .15s;
