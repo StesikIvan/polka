@@ -66,7 +66,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 21';
+const BUILD = '2026-08-22 · 23';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -534,6 +534,8 @@ function removePlay(id) {
 
 const playsOf = id => S.plays.filter(p => p.gameId === id).sort((a, b) => b.at - a.at);
 
+const lentDays = g => g.lentAt ? Math.floor((now() - g.lentAt) / DAY) : 0;
+
 // Имена подсказываем из прошлых партий: второй раз записать — два тапа.
 function knownPlayers() {
   const seen = new Map();
@@ -585,7 +587,7 @@ function statsFor(days) {
 
   // Самая отрезвляющая цифра во всей статистике.
   const played = new Set(S.plays.map(p => p.gameId));
-  const untouched = S.games.filter(g => g.kind !== 'thing' && !played.has(g.id));
+  const untouched = S.games.filter(g => g.kind !== 'thing' && !g.wish && !played.has(g.id));
 
   return { plays, minutes, top, people, untouched };
 }
@@ -677,14 +679,14 @@ function timeStr(g) {
   return `${a}–${b}′`;
 }
 function whereStr(g) {
-  if (g.lentTo) return `🤝 у ${g.lentTo}`;
+  if (g.lentTo) return `🤝 ${g.lentTo}`;
   if (!g.placeId || !place(g.placeId)) return 'место не указано';
   return pathStr(g.placeId);
 }
 
 // Под обложкой важнее последний, самый конкретный уровень: искать нужно там.
 function whereShort(g) {
-  if (g.lentTo) return `🤝 у ${g.lentTo}`;
+  if (g.lentTo) return `🤝 ${g.lentTo}`;
   const chain = g.placeId ? pathOf(g.placeId) : [];
   if (!chain.length) return 'место не указано';
   const room = chain[0], leaf = chain[chain.length - 1];
@@ -999,7 +1001,9 @@ function updateStuck() {
 const cState = { q: '', tags: new Set(), sort: 'title', kind: 'game' };
 
 function collectionList() {
-  let list = S.games.slice();
+  // Хотелки живут отдельно и в коллекцию не подмешиваются: список желаемого
+  // и полка — разные вещи, и путать их нельзя ни при показе, ни при подборе.
+  let list = S.games.filter(g => cState.kind === 'wish' ? g.wish : !g.wish);
 
   // Тег мог исчезнуть вместе с последней игрой, которая его носила. Кнопки
   // такого тега на экране уже нет, а фильтр по нему остался бы включённым —
@@ -1011,6 +1015,7 @@ function collectionList() {
 
   // Поиск идёт по всему: набрал «quest» — нашёл очки, даже если открыты настолки.
   const searching = !!cState.q.trim();
+  if (searching && cState.kind !== 'wish') list = S.games.filter(g => !g.wish);
   if (!searching && cState.kind === 'game')  list = list.filter(g => g.kind !== 'thing');
   if (!searching && cState.kind === 'thing') list = list.filter(g => g.kind === 'thing');
 
@@ -1038,12 +1043,16 @@ function viewCollection() {
 
   if (!S.games.length) return header('Коллекция', '') + emptyStart();
 
-  const nThings = S.games.filter(g => g.kind === 'thing').length;
-  const nGames = S.games.length - nThings;
+  const owned  = S.games.filter(g => !g.wish);
+  const nWish  = S.games.length - owned.length;
+  const nThings = owned.filter(g => g.kind === 'thing').length;
+  const nGames = owned.length - nThings;
   // Считаем раздельно: «5 игр» над сеткой из трёх коробок сбивает с толку.
-  const sub = nThings
-    ? `${nGames} ${plural(nGames, 'настолка', 'настолки', 'настолок')} · ${nThings} ${plural(nThings, 'другое', 'других', 'других')}`
-    : `${nGames} ${plural(nGames, 'игра', 'игры', 'игр')}`;
+  const sub = cState.kind === 'wish'
+    ? `${nWish} ${plural(nWish, 'игра в списке', 'игры в списке', 'игр в списке')} желаний`
+    : nThings
+      ? `${nGames} ${plural(nGames, 'настолка', 'настолки', 'настолок')} · ${nThings} ${plural(nThings, 'другое', 'других', 'других')}`
+      : `${nGames} ${plural(nGames, 'игра', 'игры', 'игр')}`;
 
   return header('Коллекция', sub, null, null,
     `<a class="hdr-btn" href="#/stats" aria-label="Статистика" title="Статистика">📊</a>
@@ -1052,10 +1061,11 @@ function viewCollection() {
       <input type="search" id="c-q" placeholder="Название, тег или место" value="${esc(cState.q)}"
              autocomplete="off" autocorrect="off" spellcheck="false">
     </div>
-    ${(!cState.q.trim() && S.games.some(g => g.kind === 'thing')) ? `<div class="chips scroll" style="padding-bottom:4px">
+    ${(!cState.q.trim() && (nThings || nWish)) ? `<div class="chips scroll" style="padding-bottom:4px">
       <button class="chip ${cState.kind === 'game' ? 'on' : ''}" data-kindf="game">🎲 Настолки</button>
-      <button class="chip ${cState.kind === 'thing' ? 'on' : ''}" data-kindf="thing">🎧 Другое · ${S.games.filter(g => g.kind === 'thing').length}</button>
-      <button class="chip ${cState.kind === 'all' ? 'on' : ''}" data-kindf="all">Всё вместе</button>
+      ${nThings ? `<button class="chip ${cState.kind === 'thing' ? 'on' : ''}" data-kindf="thing">🎧 Другое · ${nThings}</button>` : ''}
+      ${nThings ? `<button class="chip ${cState.kind === 'all' ? 'on' : ''}" data-kindf="all">Всё дома</button>` : ''}
+      ${nWish ? `<button class="chip ${cState.kind === 'wish' ? 'on' : ''}" data-kindf="wish">🤍 Хочу купить · ${nWish}</button>` : ''}
     </div>` : ''}
     <div class="chips scroll">
       <button class="chip ${cState.sort === 'title' ? 'on' : ''}" data-sort="title">А–Я</button>
@@ -1089,7 +1099,7 @@ function gcard(g, showWhere = true, i = 0) {
       <div class="gcard-art">
         ${art}
         ${g.playersMin ? `<span class="gcard-badge">${esc(playersStr(g))}👤</span>` : ''}
-        ${g.lentTo ? `<div class="gcard-lent">🤝<br>у ${esc(g.lentTo)}</div>` : ''}
+        ${g.lentTo ? `<div class="gcard-lent">🤝<br>${esc(g.lentTo)}</div>` : ''}
       </div>
       <div class="gcard-name">${esc(g.title)}</div>
       ${showWhere ? `<div class="gcard-where">${esc(whereShort(g))}</div>` : ''}
@@ -1167,7 +1177,7 @@ function viewHome() {
 
     ${lent.length ? `
       <div class="sect-title">Одолжены</div>
-      <div class="list">${lent.map(g => gameRow(g, `🤝 у ${g.lentTo}`)).join('')}</div>` : ''}
+      <div class="list">${lent.map(g => gameRow(g, `🤝 ${g.lentTo}`)).join('')}</div>` : ''}
     ${homeless.length ? `
       <div class="sect-title">Без места</div>
       <div class="list">${homeless.filter(g => !g.lentTo).map(g => gameRow(g, 'нажми, чтобы указать место')).join('')}</div>` : ''}
@@ -1258,11 +1268,11 @@ function viewPlace(id) {
 }
 
 /* ============================================================
-   Что сыграть — тест из трёх вопросов
+   Во что сыграть — тест из трёх вопросов
 
-   Логика та же, что на схеме GaGa: сколько вас → простое или нет →
-   что хотите устроить. На каждом варианте показываем, сколько игр за ним
-   стоит: тупиков вида «под эти условия ничего нет» быть не должно.
+   Сколько вас → простое или нет → что хотите устроить. На каждом варианте
+   показываем, сколько игр за ним стоит: тупиков вида «под эти условия
+   ничего нет» быть не должно.
    ============================================================ */
 const quiz = { step: 0, players: null, simple: null, vibe: null, tags: new Set() };
 
@@ -1288,8 +1298,8 @@ function quizMatches(over = {}) {
     quiz.tags.forEach(t => { if (!alive.has(t)) quiz.tags.delete(t); });
   }
   const a = { ...quiz, ...over };
-  // Техника и аксессуары в подборе игры на вечер ни к чему.
-  let list = S.games.filter(g => !g.lentTo && g.kind !== 'thing');
+  // Техника и то, чего ещё нет дома, в подборе игры на вечер ни к чему.
+  let list = S.games.filter(g => !g.lentTo && g.kind !== 'thing' && !g.wish);
   if (a.players) list = list.filter(g => playersFit(g, a.players));
   if (a.simple === 'easy') list = list.filter(g => complexityOf(g) === 0);
   if (a.simple === 'hard') list = list.filter(g => complexityOf(g) >= 1);
@@ -1310,7 +1320,7 @@ const qopt = (q, v, icon, title, sub, n, big) => `
 
 function viewPick() {
   if (!S.games.length) {
-    return header('Что сыграть', '') + `<div class="empty">
+    return header('Во что сыграть?', '') + `<div class="empty">
       <div class="empty-ico">🎯</div>
       <div class="empty-title">Сначала нужна коллекция</div>
       <div class="empty-text">Добавь игры — и здесь появится подбор под компанию и настроение.</div>
@@ -1323,7 +1333,7 @@ function viewPick() {
 
   /* --- Шаг 1: сколько игроков --- */
   if (quiz.step === 0) {
-    return header('Что сыграть', 'Три вопроса — и коробка на столе') + dots(0) + `
+    return header('Во что сыграть?', 'Три вопроса — и коробка на столе') + dots(0) + `
       <div class="qhead">Сколько вас будет?</div>
       <div class="pad">
         ${PLAYER_BUCKETS.map(b => qopt('players', b.v, '', b.label, b.sub,
@@ -1334,7 +1344,7 @@ function viewPick() {
   /* --- Шаг 2: простое или нет --- */
   if (quiz.step === 1) {
     const c = v => quizMatches({ simple: v, vibe: null }).length;
-    return header('Что сыграть', '', null, null, '') + dots(1) + `
+    return header('Во что сыграть?', '', null, null, '') + dots(1) + `
       <div class="qback"><button class="back-btn" data-q-back><span class="chev">‹</span>Назад</button></div>
       <div class="qhead">Что-нибудь простое?</div>
       <div class="pad">
@@ -1347,7 +1357,7 @@ function viewPick() {
   /* --- Шаг 3: что хотите устроить --- */
   if (quiz.step === 2) {
     const c = v => quizMatches({ vibe: v }).length;
-    return header('Что сыграть', '', null, null, '') + dots(2) + `
+    return header('Во что сыграть?', '', null, null, '') + dots(2) + `
       <div class="qback"><button class="back-btn" data-q-back><span class="chev">‹</span>Назад</button></div>
       <div class="qhead">Что хотите устроить?</div>
       <div class="pad">
@@ -1365,11 +1375,12 @@ function viewPick() {
     quiz.vibe && quiz.vibe !== 'any' ? vibe(quiz.vibe).label.toLowerCase() : null,
   ].filter(Boolean);
 
-  return header('Что сыграть', answers.join(' · ') || 'Без условий', null, null,
+  return header('Во что сыграть?', answers.join(' · ') || 'Без условий', null, null,
     `<button class="hdr-btn" data-q-reset aria-label="Пройти заново" title="Пройти заново">↺</button>`) + `
 
-    <div class="pad" style="margin-bottom:14px">
+    <div class="pad" style="margin-bottom:14px;display:flex;flex-direction:column;gap:9px">
       <button class="btn" data-act="random" ${!list.length ? 'disabled' : ''}>🎲 Выбери за меня</button>
+      <button class="btn ghost sm" data-act="log-play">✍️ Записать сыгранную партию</button>
     </div>
 
     ${tags.length ? `<div class="chips scroll">
@@ -1395,7 +1406,8 @@ function viewStats() {
     return header('Статистика', '') + `<div class="empty">
       <div class="empty-ico">📊</div>
       <div class="empty-title">Партий пока нет</div>
-      <div class="empty-text">Запиши первую партию в карточке любой игры — и здесь появится, во что вы играете на самом деле, а не во что собирались.</div>
+      <div class="empty-text">Запиши первую — и здесь появится, во что вы играете на самом деле, а не во что собирались.</div>
+      <button class="btn" data-act="log-play">✍️ Записать партию</button>
     </div>`;
   }
 
@@ -1410,7 +1422,8 @@ function viewStats() {
   const top = s.top.slice().sort(sorters[stState.sort]);
   const maxCount = top.length ? Math.max(...top.map(x => x.count)) : 1;
 
-  return header('Статистика', `${S.plays.length} ${plural(S.plays.length, 'партия', 'партии', 'партий')} за всё время`) + `
+  return header('Статистика', `${S.plays.length} ${plural(S.plays.length, 'партия', 'партии', 'партий')} за всё время`, null, null,
+    `<button class="hdr-btn" data-act="log-play" aria-label="Записать партию" title="Записать партию">＋</button>`) + `
     <div class="chips scroll">
       ${PERIODS.map(p => `<button class="chip ${stState.period === p.id ? 'on' : ''}" data-period="${p.id}">${p.label}</button>`).join('')}
     </div>
@@ -1609,15 +1622,29 @@ function openGame(id) {
       ${g.myRating ? `<div class="hint" style="margin:8px 0 0">Нажми ту же цифру, чтобы снять оценку.</div>` : ''}
     </div>
 
+    ${g.wish ? `
+      <div class="where-card" style="cursor:default">
+        <span class="where-pin">🤍</span>
+        <span class="where-main">
+          <span class="where-lbl">Список желаний</span>
+          <div class="where-path">Этой игры у тебя ещё нет</div>
+          ${g.note ? `<div class="where-note">${esc(g.note)}</div>` : ''}
+        </span>
+      </div>
+      <div class="sh-pad" style="margin-top:12px">
+        <button class="btn" data-act="bought" data-id="${g.id}">🏠 Купил — перенести в коллекцию</button>
+      </div>
+    ` : `
     <button class="where-card" data-act="move-game" data-id="${g.id}">
       <span class="where-pin">${g.lentTo ? '🤝' : '📍'}</span>
       <span class="where-main">
         <span class="where-lbl">${g.lentTo ? 'Одолжена' : 'Где лежит'}</span>
-        <div class="where-path">${esc(g.lentTo ? `у ${g.lentTo}` : (g.placeId && place(g.placeId) ? pathStr(g.placeId) : 'Место не указано'))}</div>
+        <div class="where-path">${esc(g.lentTo ? g.lentTo : (g.placeId && place(g.placeId) ? pathStr(g.placeId) : 'Место не указано'))}</div>
+        ${g.lentTo && g.lentAt ? `<div class="where-note">с ${esc(dayStr(g.lentAt))}${lentDays(g) > 13 ? ` · уже ${lentDays(g)} ${plural(lentDays(g), 'день', 'дня', 'дней')}` : ''}</div>` : ''}
         ${g.note ? `<div class="where-note">${esc(g.note)}</div>` : ''}
       </span>
       <span class="row-chev">›</span>
-    </button>
+    </button>`}
 
     <div class="sh-pad">
       <div class="field-lbl" style="margin-bottom:7px">
@@ -1854,7 +1881,7 @@ function openAddGame() {
 
    Для того, чего на Тесере нет и не будет: VR-очки, портативки, техника,
    самоделки, редкие издания. Отдельный вид «другое» нужен, чтобы такие
-   карточки не лезли в подбор «что сыграть».
+   карточки не лезли в подбор «во что сыграть».
 
    Своих снимков сознательно нет. Один снимок весит как девяносто карточек,
    и главное — при каждом обмене улетала бы вся коллекция целиком, включая
@@ -1883,7 +1910,7 @@ function openManualForm(preset = {}) {
           <button data-kind="game"  class="${isGame ? 'on' : ''}">Настолка</button>
           <button data-kind="thing" class="${!isGame ? 'on' : ''}">Другое</button>
         </div>
-        ${!isGame ? '<div class="hint" style="margin:8px 0 0">Техника, аксессуары, всё несыгровое. В подбор «что сыграть» не попадёт.</div>' : ''}
+        ${!isGame ? '<div class="hint" style="margin:8px 0 0">Техника, аксессуары, всё несыгровое. В подбор «во что сыграть» не попадёт.</div>' : ''}
       </div>
 
       <div class="field">
@@ -2032,7 +2059,15 @@ function openGameForm(g, opts = {}) {
       <input type="text" id="f-title" value="${esc(g.title)}">
     </div>
 
-    <div class="field">
+    ${opts.onDone ? '' : `<div class="field">
+      <div class="field-lbl">Куда добавляем</div>
+      <div class="seg">
+        <button data-wish="0" class="${g.wish ? '' : 'on'}">🏠 Она у меня есть</button>
+        <button data-wish="1" class="${g.wish ? 'on' : ''}">🤍 Хочу купить</button>
+      </div>
+    </div>`}
+
+    <div class="field" ${g.wish ? 'hidden' : ''}>
       <div class="field-lbl">Где будет лежать</div>
       <button class="btn ghost sm" id="f-place" style="justify-content:space-between;padding:0 14px">
         <span id="f-place-txt">${g.placeId ? esc(pathStr(g.placeId)) : 'Выбрать место'}</span><span>›</span>
@@ -2071,6 +2106,13 @@ function openGameForm(g, opts = {}) {
 
     const skip = $('#f-skip', body);
     if (skip) skip.addEventListener('click', () => opts.onDone('skip'));
+
+    $$('[data-wish]', body).forEach(b => b.addEventListener('click', () => {
+      capture();
+      draft.wish = b.dataset.wish === '1';
+      if (draft.wish) draft.placeId = null;   // у хотелки места быть не может
+      openGameForm(draft, opts);
+    }));
 
     if (!opts.onDone) fillFormAdditions(draft, body);   // у дополнения своих допов не спрашиваем
 
@@ -2566,15 +2608,95 @@ function openEditNote(id) {
       <div class="field-lbl">Одолжена (кому)</div>
       <input type="text" id="en-lent" value="${esc(g.lentTo || '')}" placeholder="Пусто — значит дома">
     </div>
+    <div class="field">
+      <div class="field-lbl">С какого дня — если помнишь</div>
+      <input type="date" id="en-lentat" value="${g.lentAt ? isoDay(g.lentAt) : ''}" max="${isoDay(now())}">
+      <div class="hint" style="margin:8px 0 0">Можно не заполнять. Если поставишь — увидишь, сколько игра уже гостит.</div>
+    </div>
     <div class="sh-actions"><button class="btn" id="en-ok">Сохранить</button></div>
   `, body => {
     $('#en-ok', body).addEventListener('click', () => {
       g.note = $('#en-note', body).value.trim();
+      const was = g.lentTo;
       g.lentTo = $('#en-lent', body).value.trim();
+      const d = $('#en-lentat', body).value;
+      // Дата не обязательна. Но если человек отметил, что игру забрали,
+      // и день не указал — считаем от сегодня, чтобы счётчик был не с нуля.
+      g.lentAt = d ? new Date(d + 'T12:00:00').getTime() : (g.lentTo && !was ? now() : (g.lentTo ? g.lentAt : null));
       saveGame(g); closeSheet(); render(); toast('Сохранено');
     });
   });
 }
+
+/* ============================================================
+   БРОСОК КУБИКА
+
+   Единственное место в приложении, где аттракцион уместен: обложки
+   перебираются всё медленнее и останавливаются на выпавшей. Момент выбора
+   игры на вечер — он и должен быть событием, а не мгновенной подменой экрана.
+
+   Никакого WebGL и частиц: одна картинка, подмена адреса и две css-переменные.
+   На телефоне, который открывают на пятнадцать секунд, это важнее красоты.
+   ============================================================ */
+function rollTheDice(list) {
+  const winner = list[Math.floor(Math.random() * list.length)];
+  if (list.length < 3 || prefersCalm()) { openGame(winner.id); return; }
+
+  const el = document.createElement('div');
+  el.className = 'roll';
+  el.innerHTML = `
+    <div class="roll-stage">
+      <div class="roll-card"><img alt=""><div class="roll-ph">🎲</div></div>
+      <div class="roll-name"></div>
+    </div>`;
+  document.body.append(el);
+  void el.offsetWidth;
+  el.classList.add('in');
+
+  const img = $('img', el), ph = $('.roll-ph', el), name = $('.roll-name', el);
+  const card = $('.roll-card', el);
+
+  const show = g => {
+    if (g.photoUrl) { img.src = thumb(g.photoUrl, 400); img.hidden = false; ph.hidden = true; }
+    else { img.hidden = true; ph.hidden = false; }
+    name.textContent = g.title;
+  };
+
+  // Кадры замедляются к концу — так бросок читается как настоящий,
+  // а не как равномерное мелькание.
+  const frames = [];
+  for (let i = 0; i < 14; i++) frames.push(45 + Math.round(Math.pow(i / 13, 3) * 320));
+
+  let i = 0;
+  const step = () => {
+    const last = i === frames.length - 1;
+    show(last ? winner : list[Math.floor(Math.random() * list.length)]);
+    card.classList.remove('tick');
+    void card.offsetWidth;
+    card.classList.add('tick');
+
+    if (last) {
+      el.classList.add('done');
+      setTimeout(() => {
+        el.classList.remove('in');
+        setTimeout(() => el.remove(), 320);
+        openGame(winner.id);
+      }, 620);
+      return;
+    }
+    setTimeout(step, frames[i++]);
+  };
+  step();
+
+  el.addEventListener('click', () => {          // не хочешь смотреть — тапни
+    el.remove();
+    openGame(winner.id);
+  });
+}
+
+// Уважаем системную настройку «уменьшить движение»: для кого-то это
+// не украшение, а причина закрыть приложение.
+const prefersCalm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /* ============================================================
    ШТОРКА: запись партии
@@ -2697,6 +2819,53 @@ function openPlayForm(gameId, existing = null) {
     });
   };
 
+  draw();
+}
+
+/* Записать партию можно откуда угодно, не только из карточки: после
+   вечера проще открыть статистику и внести всё сразу. */
+function openPlayPicker() {
+  let q = '';
+
+  const draw = () => {
+    const nq = normTitle(q);
+    const list = S.games
+      .filter(g => !g.wish && g.kind !== 'thing')
+      .filter(g => !nq || normTitle(g.title).includes(nq) || normTitle(g.titleOrig).includes(nq))
+      .sort((a, b) => lastPlayAt(b.id) - lastPlayAt(a.id) || collator.compare(a.title, b.title));
+
+    openSheet(`
+      ${sheetHead('Во что играли?')}
+      <div class="field">
+        <input type="text" id="pp-q" placeholder="Название" value="${esc(q)}" autocomplete="off">
+      </div>
+      ${list.length ? `<div class="list">${list.slice(0, 40).map(g => {
+        const n = playsOf(g.id).length;
+        return `<button class="row" data-pp="${g.id}">
+          ${g.photoUrl ? `<img class="row-thumb" src="${esc(thumb(g.photoUrl, 200))}" alt="" loading="lazy">`
+                       : `<span class="row-ico" style="width:42px;height:42px">🎲</span>`}
+          <span class="row-main">
+            <span class="row-title">${esc(g.title)}</span>
+            <span class="row-sub">${n ? `${n} ${plural(n, 'партия', 'партии', 'партий')} · последняя ${dayStr(lastPlayAt(g.id))}` : 'ещё не играли'}</span>
+          </span><span class="row-chev">›</span>
+        </button>`;
+      }).join('')}</div>` : '<div class="hint" style="margin:4px 16px">Ничего не нашлось.</div>'}
+    `, body => {
+      const inp = $('#pp-q', body);
+      inp.addEventListener('input', e => {
+        q = e.target.value;
+        const pos = e.target.selectionStart;
+        draw();
+        const again = $('#pp-q', sheetBody);
+        if (again) { again.focus(); again.setSelectionRange(pos, pos); }
+      });
+      body.onclick = e => {
+        if (e.target.closest('[data-sh-close]')) { closeSheet(); return; }
+        const row = e.target.closest('[data-pp]');
+        if (row) openPlayForm(row.dataset.pp);
+      };
+    });
+  };
   draw();
 }
 
@@ -3209,7 +3378,7 @@ document.addEventListener('click', async e => {
     render(); return;
   }
 
-  // Тест «что сыграть»
+  // Тест «во что сыграть»
   const qa = t.closest('[data-q]');
   if (qa) { quiz[qa.dataset.q] = qa.dataset.v; quiz.step++; render(); return; }
   if (t.closest('[data-q-back]')) {
@@ -3343,6 +3512,21 @@ document.addEventListener('click', async e => {
     }
 
     case 'add-play': openPlayForm(act.dataset.id); break;
+
+    case 'bought': {
+      const g = game(act.dataset.id); if (!g) break;
+      g.wish = false;
+      saveGame(g);
+      cState.kind = g.kind === 'thing' ? 'thing' : 'game';
+      closeSheet(); render();
+      toast('Теперь дома — укажи место', { label: 'Указать', fn: () => openPlacePicker(pid => {
+        g.placeId = pid; saveGame(g); closeSheet(); render();
+        toast(pid ? `Теперь: ${pathStr(pid)}` : 'Пока без места');
+      }) });
+      break;
+    }
+
+    case 'log-play': openPlayPicker(); break;
     case 'place-games': openPlaceGames(act.dataset.id); break;
     case 'reparent': openReparent(act.dataset.id); break;
     case 'edit-tags': openEditTags(act.dataset.id); break;
@@ -3360,16 +3544,16 @@ document.addEventListener('click', async e => {
     case 'random': {
       const list = quizMatches();
       if (!list.length) break;
-      openGame(list[Math.floor(Math.random() * list.length)].id);
+      rollTheDice(list);
       break;
     }
 
     // Кубик в шапке коллекции: тянет из того, что сейчас на экране,
     // так что фильтр по тегу или поиск сужают жеребьёвку.
     case 'random-any': {
-      const list = collectionList().filter(g => !g.lentTo);
+      const list = collectionList().filter(g => !g.lentTo && !g.wish);
       if (!list.length) { toast('Нечего выбирать'); break; }
-      openGame(list[Math.floor(Math.random() * list.length)].id);
+      rollTheDice(list);
       break;
     }
 

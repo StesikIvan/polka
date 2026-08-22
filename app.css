@@ -119,9 +119,11 @@ input, textarea { -webkit-user-select: text; user-select: text; }
   border-top: .5px solid var(--hair);
 }
 .tb-item {
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  color: var(--tx-3); font-size: 10px; font-weight: 600; letter-spacing: -.01em;
-  padding-top: 4px; transition: color .18s;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  /* 11px — минимальный кегль по гайдлайнам Apple, ниже текст читается плохо */
+  color: var(--tx-3); font-size: 11px; font-weight: 600; letter-spacing: -.02em;
+  height: 100%; min-height: 44px;          /* цель нажатия не меньше 44 точек */
+  transition: color .18s;
 }
 .tb-ico { font-size: 21px; line-height: 1; filter: grayscale(1) opacity(.55); transition: filter .18s, transform .18s var(--ease); }
 .tb-item.on { color: var(--accent); }
@@ -162,12 +164,16 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 .hdr-row { display: flex; align-items: center; gap: 10px; min-height: 34px; }
 .hdr-title { font-size: 30px; font-weight: 800; letter-spacing: -.03em; margin: 2px 0 0; flex: 1; min-width: 0; }
 .hdr-sub { font-size: 13px; color: var(--tx-2); margin-top: 1px; }
+/* Кружок рисуем 36px, но область нажатия растягиваем до 44 —
+   промахиваться по кнопке в шапке нельзя. */
 .hdr-btn {
-  width: 34px; height: 34px; border-radius: 50%;
+  position: relative;
+  width: 36px; height: 36px; border-radius: 50%; flex: 0 0 auto;
   display: grid; place-items: center; font-size: 17px;
   background: var(--bg-chip); border: .5px solid var(--hair);
   transition: transform .15s var(--ease);
 }
+.hdr-btn::before { content: ''; position: absolute; inset: -4px; border-radius: 50%; }
 .hdr-btn:active { transform: scale(.88); }
 .back-btn {
   display: inline-flex; align-items: center; gap: 3px;
@@ -466,6 +472,51 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 }
 .qopt:not(:disabled):active .qopt-n { background: var(--accent); color: var(--accent-tx); }
 
+/* ============ Бросок кубика ============ */
+.roll {
+  position: fixed; inset: 0; z-index: 150;
+  display: grid; place-items: center;
+  background: rgba(8,9,11,.86);
+  -webkit-backdrop-filter: blur(24px) saturate(140%); backdrop-filter: blur(24px) saturate(140%);
+  opacity: 0; transition: opacity .28s var(--ease);
+}
+.roll.in { opacity: 1; }
+.roll-stage { text-align: center; padding: 24px; }
+
+.roll-card {
+  width: min(58vw, 240px); aspect-ratio: 1;
+  margin: 0 auto; border-radius: 26px; overflow: hidden;
+  background: var(--bg-elev);
+  box-shadow: 0 24px 70px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.07);
+  display: grid; place-items: center;
+}
+.roll-card img { width: 100%; height: 100%; object-fit: cover; }
+.roll-ph { font-size: 64px; opacity: .4; }
+
+/* Толчок на каждой смене обложки — бросок должен ощущаться физически */
+.roll-card.tick { animation: rollTick .16s var(--ease); }
+@keyframes rollTick {
+  0%   { transform: scale(.94) rotate(-1.2deg); }
+  100% { transform: scale(1) rotate(0); }
+}
+
+.roll-name {
+  margin-top: 20px; color: #fff;
+  font-size: 20px; font-weight: 800; letter-spacing: -.02em;
+  max-width: min(78vw, 320px); line-height: 1.25;
+  opacity: .55; transition: opacity .3s var(--ease);
+}
+.roll.done .roll-name { opacity: 1; }
+.roll.done .roll-card {
+  animation: rollLand .55s var(--ease);
+  box-shadow: 0 24px 70px rgba(0,0,0,.7), 0 0 0 3px var(--accent), 0 0 48px -4px var(--accent);
+}
+@keyframes rollLand {
+  0%   { transform: scale(1); }
+  38%  { transform: scale(1.09); }
+  100% { transform: scale(1.04); }
+}
+
 /* ============ Полоска в статистике ============ */
 .bar {
   display: block; height: 4px; margin-top: 6px;
@@ -588,3 +639,18 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* Кто-то отключает прозрачность из-за укачивания или слабого зрения.
+   Размытие — украшение, читаемость — нет. */
+@media (prefers-reduced-transparency: reduce) {
+  #tabbar, .hdr, #toast, .roll {
+    -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+  }
+  #tabbar, .hdr { background: var(--bg) !important; }
+  .roll { background: var(--bg) !important; }
+  #toast { background: #1c1c20 !important; }
+}
+
+/* Мелкий текст не должен становиться нечитаемым, если человек увеличил
+   системный шрифт — но и разъезжаться от этого интерфейс не должен. */
+.gcard-name, .row-title, .qopt-t { overflow-wrap: anywhere; }
