@@ -47,6 +47,14 @@ function toast(msg, action) {
   toast._t = setTimeout(hideToast, action ? 8000 : 2000);
 }
 
+// Фокус ставим с задержкой — иначе клавиатура перебивает анимацию шторки.
+// Но за эти четверть секунды шторку могут закрыть или сменить, поэтому
+// проверяем, что поле всё ещё на экране.
+function focusLater(el, delay = 250) {
+  if (!el) return;
+  setTimeout(() => { if (el.isConnected) el.focus(); }, delay);
+}
+
 function hideToast() {
   const t = $('#toast');
   clearTimeout(toast._t);
@@ -58,7 +66,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 19';
+const BUILD = '2026-08-22 · 21';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -81,7 +89,7 @@ let S = load();
 function blank() {
   // trash — «надгробия» удалённых записей: без них удаление на одном
   // устройстве откатывалось бы обратно при слиянии с другим.
-  return { v: 1, places: [], games: [], trash: {} };
+  return { v: 1, places: [], games: [], plays: [], trash: {} };
 }
 
 // Данные приходят из двух мест, и оба могут оказаться битыми: локальное
@@ -92,6 +100,7 @@ function normalizeState(d) {
   const out = { ...blank(), ...(d && typeof d === 'object' ? d : {}) };
   out.games  = Array.isArray(out.games)  ? out.games.filter(x => x && x.id)  : [];
   out.places = Array.isArray(out.places) ? out.places.filter(x => x && x.id) : [];
+  out.plays  = Array.isArray(out.plays)  ? out.plays.filter(x => x && x.id && x.gameId) : [];
   out.trash  = (out.trash && typeof out.trash === 'object' && !Array.isArray(out.trash)) ? out.trash : {};
   return out;
 }
@@ -274,6 +283,7 @@ function mergeStates(a, b) {
     v: 1,
     games: mergeList(a.games, b.games),
     places: mergeList(a.places, b.places),
+    plays: mergeList(a.plays, b.plays),
     trash,
   };
 }
@@ -281,6 +291,7 @@ function mergeStates(a, b) {
 const fingerprint = d => JSON.stringify({
   g: (d.games || []).map(x => [x.id, x.updatedAt || 0]).sort(),
   p: (d.places || []).map(x => [x.id, x.updatedAt || 0]).sort(),
+  s: (d.plays || []).map(x => [x.id, x.updatedAt || 0]).sort(),
   t: Object.entries(d.trash || {}).sort(),
 });
 
@@ -429,7 +440,7 @@ function removePlace(id) {
 
 function undoLast() {
   if (!undoSnap) { toast('Отменять нечего'); return; }
-  const { places, games, moved, label } = undoSnap;
+  const { places, games, plays, moved, label } = undoSnap;
 
   // Надгробие снимаем и ставим свежее время правки: иначе удаление,
   // уже уехавшее на другие устройства, снесёт возвращённое обратно.
@@ -443,6 +454,7 @@ function undoLast() {
   };
   places.forEach(p => revive(p, S.places));
   games.forEach(g => revive(g, S.games));
+  (plays || []).forEach(p => revive(p, S.plays));
   (moved || []).forEach(({ id, placeId }) => {
     const g = game(id);
     if (g) { g.placeId = placeId; g.updatedAt = now() + 1; }
@@ -495,6 +507,107 @@ function removeGame(id) {
   save();
   undoSnap = { label: 'Возвращено в коллекцию', places: [], games: g ? [{ ...g }] : [], moved: [] };
 }
+
+/* ============================================================
+   ПАРТИИ
+
+   Отдельная сущность, а не поле в карточке: иначе не будет ни истории,
+   ни статистики за период. Синхронизируется наравне с играми и местами —
+   с тем же временем правки и теми же надгробиями.
+   ============================================================ */
+const DAY = 86400000;
+
+function savePlay(p) {
+  touch(p);
+  const i = S.plays.findIndex(x => x.id === p.id);
+  if (i >= 0) S.plays[i] = p; else S.plays.push(p);
+  save();
+}
+
+function removePlay(id) {
+  const p = S.plays.find(x => x.id === id);
+  S.plays = S.plays.filter(x => x.id !== id);
+  bury(id);
+  save();
+  undoSnap = { label: 'Партия возвращена', places: [], games: [], plays: p ? [{ ...p }] : [], moved: [] };
+}
+
+const playsOf = id => S.plays.filter(p => p.gameId === id).sort((a, b) => b.at - a.at);
+
+// Имена подсказываем из прошлых партий: второй раз записать — два тапа.
+function knownPlayers() {
+  const seen = new Map();
+  S.plays.forEach(p => (p.players || []).forEach(x => {
+    if (x.name) seen.set(x.name, (seen.get(x.name) || 0) + 1);
+  }));
+  return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(x => x[0]);
+}
+
+const PERIODS = [
+  { id: 'week',  label: 'Неделя', days: 7 },
+  { id: 'month', label: 'Месяц',  days: 31 },
+  { id: 'year',  label: 'Год',    days: 365 },
+  { id: 'all',   label: 'Всё время', days: null },
+];
+
+function playsInPeriod(days) {
+  if (!days) return S.plays.slice();
+  const from = now() - days * DAY;
+  return S.plays.filter(p => p.at >= from);
+}
+
+function statsFor(days) {
+  const plays = playsInPeriod(days);
+  const minutes = plays.reduce((s, p) => s + (p.minutes || 0), 0);
+
+  const byGame = new Map();
+  plays.forEach(p => {
+    const cur = byGame.get(p.gameId) || { count: 0, minutes: 0 };
+    cur.count++; cur.minutes += p.minutes || 0;
+    byGame.set(p.gameId, cur);
+  });
+
+  const top = [...byGame.entries()]
+    .map(([id, v]) => ({ game: game(id), ...v }))
+    .filter(x => x.game)
+    .sort((a, b) => b.count - a.count || b.minutes - a.minutes);
+
+  const byPerson = new Map();
+  plays.forEach(p => (p.players || []).forEach(x => {
+    if (!x.name) return;
+    const cur = byPerson.get(x.name) || { games: 0, wins: 0 };
+    cur.games++; if (x.won) cur.wins++;
+    byPerson.set(x.name, cur);
+  }));
+  const people = [...byPerson.entries()]
+    .map(([name, v]) => ({ name, ...v }))
+    .sort((a, b) => b.wins - a.wins || b.games - a.games);
+
+  // Самая отрезвляющая цифра во всей статистике.
+  const played = new Set(S.plays.map(p => p.gameId));
+  const untouched = S.games.filter(g => g.kind !== 'thing' && !played.has(g.id));
+
+  return { plays, minutes, top, people, untouched };
+}
+
+function hoursStr(min) {
+  if (!min) return '0 ч';
+  if (min < 60) return `${min} мин`;
+  const h = Math.floor(min / 60), m = min % 60;
+  return m ? `${h} ч ${m} мин` : `${h} ч`;
+}
+
+function dayStr(ts) {
+  const d = new Date(ts);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = Math.round((today - new Date(d).setHours(0, 0, 0, 0)) / DAY);
+  if (diff === 0) return 'сегодня';
+  if (diff === 1) return 'вчера';
+  if (diff < 7) return `${diff} ${plural(diff, 'день', 'дня', 'дней')} назад`;
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+}
+
+const isoDay = ts => new Date(ts - new Date(ts).getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 
 /* ============================================================
    НАСТРОЕНИЕ ИГРЫ
@@ -850,12 +963,14 @@ function render() {
   if (route === 'connect' && arg) { openConnect(arg); return render(); }
 
   $$('[data-tab]').forEach(el => el.classList.toggle('on',
-    el.dataset.tab === route || (route === 'place' && el.dataset.tab === 'home')));
+    el.dataset.tab === route
+    || (route === 'place' && el.dataset.tab === 'home')
+    || (route === 'stats' && el.dataset.tab === 'settings')));
 
   $('#sb-count-games').textContent = S.games.length || '';
   $('#sb-count-places').textContent = S.places.filter(p => p.kind === 'room').length || '';
 
-  const views = { collection: viewCollection, home: viewHome, place: viewPlace, pick: viewPick, settings: viewSettings };
+  const views = { collection: viewCollection, home: viewHome, place: viewPlace, pick: viewPick, stats: viewStats, settings: viewSettings };
   const fn = views[route] || viewCollection;
   view.innerHTML = fn(arg);
   main.scrollTop = scrollMem[raw] || 0;
@@ -931,7 +1046,8 @@ function viewCollection() {
     : `${nGames} ${plural(nGames, 'игра', 'игры', 'игр')}`;
 
   return header('Коллекция', sub, null, null,
-    `<button class="hdr-btn" data-act="random-any" aria-label="Случайная игра" title="Случайная игра">🎲</button>`) + `
+    `<a class="hdr-btn" href="#/stats" aria-label="Статистика" title="Статистика">📊</a>
+     <button class="hdr-btn" data-act="random-any" aria-label="Случайная игра" title="Случайная игра">🎲</button>`) + `
     <div class="searchbar">
       <input type="search" id="c-q" placeholder="Название, тег или место" value="${esc(cState.q)}"
              autocomplete="off" autocorrect="off" spellcheck="false">
@@ -1271,6 +1387,95 @@ function viewPick() {
   `;
 }
 
+/* ---------- Статистика ---------- */
+const stState = { period: 'month', sort: 'count' };
+
+function viewStats() {
+  if (!S.plays.length) {
+    return header('Статистика', '') + `<div class="empty">
+      <div class="empty-ico">📊</div>
+      <div class="empty-title">Партий пока нет</div>
+      <div class="empty-text">Запиши первую партию в карточке любой игры — и здесь появится, во что вы играете на самом деле, а не во что собирались.</div>
+    </div>`;
+  }
+
+  const per = PERIODS.find(p => p.id === stState.period) || PERIODS[1];
+  const s = statsFor(per.days);
+
+  const sorters = {
+    count:   (a, b) => b.count - a.count || b.minutes - a.minutes,
+    minutes: (a, b) => b.minutes - a.minutes || b.count - a.count,
+    recent:  (a, b) => lastPlayAt(b.game.id) - lastPlayAt(a.game.id),
+  };
+  const top = s.top.slice().sort(sorters[stState.sort]);
+  const maxCount = top.length ? Math.max(...top.map(x => x.count)) : 1;
+
+  return header('Статистика', `${S.plays.length} ${plural(S.plays.length, 'партия', 'партии', 'партий')} за всё время`) + `
+    <div class="chips scroll">
+      ${PERIODS.map(p => `<button class="chip ${stState.period === p.id ? 'on' : ''}" data-period="${p.id}">${p.label}</button>`).join('')}
+    </div>
+
+    <div class="stat-row" style="margin-top:6px">
+      <div class="stat"><div class="stat-v">${s.plays.length}</div><div class="stat-l">${plural(s.plays.length, 'партия', 'партии', 'партий')}</div></div>
+      <div class="stat"><div class="stat-v ${hoursStr(s.minutes).length > 5 ? 'long' : ''}">${esc(hoursStr(s.minutes))}</div><div class="stat-l">за столом</div></div>
+      <div class="stat"><div class="stat-v">${top.length}</div><div class="stat-l">${plural(top.length, 'игра', 'игры', 'игр')}</div></div>
+    </div>
+
+    ${top.length ? `
+      <div class="sect-title">Самые наигранные</div>
+      <div class="chips scroll">
+        <button class="chip ${stState.sort === 'count' ? 'on' : ''}" data-stsort="count">По партиям</button>
+        <button class="chip ${stState.sort === 'minutes' ? 'on' : ''}" data-stsort="minutes">По часам</button>
+        <button class="chip ${stState.sort === 'recent' ? 'on' : ''}" data-stsort="recent">Недавние</button>
+      </div>
+      <div class="list">${top.map(x => `
+        <button class="row" data-game="${x.game.id}">
+          ${x.game.photoUrl ? `<img class="row-thumb" src="${esc(thumb(x.game.photoUrl, 200))}" alt="" loading="lazy">`
+                            : `<span class="row-ico" style="width:42px;height:42px">🎲</span>`}
+          <span class="row-main">
+            <span class="row-title">${esc(x.game.title)}</span>
+            <span class="row-sub">${x.count} ${plural(x.count, 'партия', 'партии', 'партий')} · ${esc(hoursStr(x.minutes))}</span>
+            <span class="bar"><span class="bar-fill" style="width:${Math.round(x.count / maxCount * 100)}%"></span></span>
+          </span>
+          <span class="row-val" style="font-weight:750;color:var(--tx)">${stState.sort === 'minutes' ? esc(hoursStr(x.minutes)) : x.count}</span>
+        </button>`).join('')}</div>` : `
+      <div class="hint">За этот период партий не было.</div>`}
+
+    ${s.people.length ? `
+      <div class="sect-title">Кто выигрывает</div>
+      <div class="list">${s.people.map(p => `
+        <div class="row">
+          <span class="row-ico">${p.wins && p.wins === Math.max(...s.people.map(x => x.wins)) ? '👑' : '🙂'}</span>
+          <span class="row-main">
+            <span class="row-title">${esc(p.name)}</span>
+            <span class="row-sub">${p.wins} ${plural(p.wins, 'победа', 'победы', 'побед')} из ${p.games}</span>
+          </span>
+          <span class="row-val" style="font-weight:750;color:var(--tx)">${p.games ? Math.round(p.wins / p.games * 100) : 0}%</span>
+        </div>`).join('')}</div>` : ''}
+
+    ${s.untouched.length ? `
+      <div class="sect-title">Куплено и ни разу не сыграно · ${s.untouched.length}</div>
+      ${gridHtml(s.untouched.slice(0, 12))}
+      ${s.untouched.length > 12 ? `<div class="hint">…и ещё ${s.untouched.length - 12}</div>` : ''}
+    ` : ''}
+
+    <div class="sect-title">Все партии</div>
+    <div class="list">${playsInPeriod(per.days).sort((a, b) => b.at - a.at).slice(0, 40).map(p => {
+      const g = game(p.gameId);
+      const winners = (p.players || []).filter(x => x.won).map(x => x.name);
+      return `<button class="row" data-play="${p.id}">
+        <span class="row-ico">🗓</span>
+        <span class="row-main">
+          <span class="row-title">${esc(g ? g.title : 'удалённая игра')}</span>
+          <span class="row-sub">${esc(dayStr(p.at))}${p.minutes ? ` · ${hoursStr(p.minutes)}` : ''}${winners.length ? ' · 👑 ' + esc(winners.join(', ')) : ''}</span>
+        </span><span class="row-chev">›</span>
+      </button>`;
+    }).join('')}</div>
+  `;
+}
+
+const lastPlayAt = id => Math.max(0, ...S.plays.filter(p => p.gameId === id).map(p => p.at));
+
 /* ---------- Настройки ---------- */
 function viewSettings() {
   const rooms = S.places.filter(p => p.kind === 'room').length;
@@ -1278,8 +1483,23 @@ function viewSettings() {
   const spots = S.places.filter(p => p.kind === 'spot').length;
   const noPlace = S.games.filter(g => !g.placeId || !place(g.placeId)).length;
 
+  const week = playsInPeriod(7).length;
+
   return header('Настройки', '') + `
-    <div class="stat-row" style="margin-top:8px">
+    <div class="sect-title" style="margin-top:8px">Партии</div>
+    <div class="list">
+      <a class="row" href="#/stats">
+        <span class="row-ico">📊</span>
+        <span class="row-main">
+          <span class="row-title">Статистика</span>
+          <span class="row-sub">${S.plays.length
+            ? `${S.plays.length} ${plural(S.plays.length, 'партия', 'партии', 'партий')} за всё время${week ? `, ${week} за неделю` : ''}`
+            : 'Пока ни одной партии не записано'}</span>
+        </span><span class="row-chev">›</span>
+      </a>
+    </div>
+
+    <div class="stat-row" style="margin-top:18px">
       <div class="stat"><div class="stat-v">${S.games.length}</div><div class="stat-l">игр</div></div>
       <div class="stat"><div class="stat-v">${rooms}</div><div class="stat-l">комнат</div></div>
       <div class="stat"><div class="stat-v">${furn + spots}</div><div class="stat-l">мест хранения</div></div>
@@ -1355,6 +1575,9 @@ function openGame(id) {
   const g = game(id);
   if (!g) return;
 
+  const plays = playsOf(id);
+  const totalMin = plays.reduce((s, p) => s + (p.minutes || 0), 0);
+
   const cover = g.photoUrl
     ? `<img class="gd-cover" src="${esc(thumb(g.photoUrl, 400))}" alt="">`
     : `<div class="gd-cover gcard-ph" style="display:grid">🎲</div>`;
@@ -1372,8 +1595,18 @@ function openGame(id) {
     <div class="facts">
       <div class="fact"><div class="fact-v">${esc(playersStr(g))}</div><div class="fact-l">игроков</div></div>
       <div class="fact"><div class="fact-v">${esc(timeStr(g))}</div><div class="fact-l">партия</div></div>
-      <div class="fact"><div class="fact-v">${g.ageMin ? g.ageMin + '+' : '—'}</div><div class="fact-l">возраст</div></div>
-      <div class="fact"><div class="fact-v">${g.rating ? g.rating.toFixed(1) : '—'}</div><div class="fact-l">рейтинг</div></div>
+      <div class="fact"><div class="fact-v">${plays.length || '—'}</div><div class="fact-l">сыграно</div></div>
+      <div class="fact"><div class="fact-v">${g.myRating ? g.myRating : (g.rating ? g.rating.toFixed(1) : '—')}</div><div class="fact-l">${g.myRating ? 'моя оценка' : 'рейтинг'}</div></div>
+    </div>
+
+    <div class="sh-pad" style="margin-top:16px">
+      <div class="field-lbl" style="margin-bottom:7px">Моя оценка</div>
+      <div class="chips">
+        ${[1,2,3,4,5,6,7,8,9,10].map(n =>
+          `<button class="chip ${g.myRating === n ? 'on' : ''}" data-rate="${n}" data-gid="${g.id}"
+                   style="min-width:38px;justify-content:center">${n}</button>`).join('')}
+      </div>
+      ${g.myRating ? `<div class="hint" style="margin:8px 0 0">Нажми ту же цифру, чтобы снять оценку.</div>` : ''}
     </div>
 
     <button class="where-card" data-act="move-game" data-id="${g.id}">
@@ -1423,6 +1656,25 @@ function openGame(id) {
             : '');
       return toBase + '<div class="sh-pad" id="gd-adds" style="margin-top:16px"></div>';
     })()}
+
+    <div class="sh-pad" style="margin-top:16px">
+      <div class="field-lbl" style="margin-bottom:7px">
+        Партии${plays.length ? ` · ${plays.length} ${plural(plays.length, 'раз', 'раза', 'раз')}, ${hoursStr(totalMin)}` : ''}
+      </div>
+      ${plays.length ? `<div class="list" style="margin:0 0 9px">${plays.slice(0, 5).map(p => {
+        const winners = (p.players || []).filter(x => x.won).map(x => x.name);
+        return `<button class="row" data-play="${p.id}">
+          <span class="row-ico">🗓</span>
+          <span class="row-main">
+            <span class="row-title">${esc(dayStr(p.at))}${p.minutes ? ` · ${hoursStr(p.minutes)}` : ''}</span>
+            <span class="row-sub">${winners.length ? '👑 ' + esc(winners.join(', ')) : (p.players || []).length ? esc(p.players.map(x => x.name).join(', ')) : 'без подробностей'}</span>
+          </span><span class="row-chev">›</span>
+        </button>`;
+      }).join('')}</div>
+      ${plays.length > 5 ? `<div class="hint" style="margin:0 0 9px">и ещё ${plays.length - 5} — все в статистике</div>` : ''}`
+      : '<div class="hint" style="margin:0 0 9px">Ещё ни разу не играли.</div>'}
+      <button class="btn sm" data-act="add-play" data-id="${g.id}">＋ Записать партию</button>
+    </div>
 
     <div class="sh-pad" style="margin-top:16px">
       <div class="field-lbl" style="margin-bottom:7px">Теги</div>
@@ -1536,7 +1788,7 @@ function openAddGame() {
       openManualForm({ title: $('#ag-q', body).value.trim() }));
 
     const q = $('#ag-q', body), res = $('#ag-res', body);
-    setTimeout(() => q.focus(), 250);
+    focusLater(q);
     q.addEventListener('input', () => {
       clearTimeout(searchTimer);
       const v = q.value.trim();
@@ -1952,7 +2204,7 @@ function openFindExpansion(draft, onPick) {
     <div id="fx-res" class="sh-pad" style="min-height:100px"></div>
   `, b => {
     const q = $('#fx-q', b), res = $('#fx-res', b);
-    setTimeout(() => { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }, 250);
+    focusLater(q); setTimeout(() => { if (q.isConnected) q.setSelectionRange(q.value.length, q.value.length); }, 260);
 
     const run = () => {
       clearTimeout(timer);
@@ -2238,7 +2490,7 @@ function promptPlace(kind, parentId, existing = null) {
       <div class="sh-actions"><button class="btn" id="np-ok">${existing ? 'Сохранить' : 'Создать'}</button></div>
     `, body => {
       const inp = $('#np-name', body);
-      setTimeout(() => inp.focus(), 250);
+      focusLater(inp);
 
       $('#np-icons', body).addEventListener('click', e => {
         const c = e.target.closest('[data-i]'); if (!c) return;
@@ -2322,6 +2574,130 @@ function openEditNote(id) {
       saveGame(g); closeSheet(); render(); toast('Сохранено');
     });
   });
+}
+
+/* ============================================================
+   ШТОРКА: запись партии
+   ============================================================ */
+function openPlayForm(gameId, existing = null) {
+  const g = game(gameId);
+  if (!g) return;
+
+  const draft = existing
+    ? { ...existing, players: existing.players.map(x => ({ ...x })) }
+    : {
+        id: uid(), gameId,
+        at: now(),
+        minutes: g.playtimeMax || g.playtimeMin || null,
+        players: [],
+        note: '',
+      };
+
+  const draw = () => {
+    const suggest = knownPlayers().filter(n => !draft.players.some(p => p.name === n)).slice(0, 8);
+
+    openSheet(`
+      ${sheetHead(existing ? 'Партия' : 'Записать партию')}
+      <div class="hint" style="margin:-4px 16px 12px">${esc(g.title)}</div>
+
+      <div class="field">
+        <div class="field-lbl">Когда</div>
+        <input type="date" id="pf-date" value="${isoDay(draft.at)}" max="${isoDay(now())}">
+      </div>
+
+      <div class="field">
+        <div class="field-lbl">Сколько играли, минут</div>
+        <input type="number" id="pf-min" min="1" max="1440" value="${draft.minutes || ''}" placeholder="не считали">
+      </div>
+
+      <div class="field">
+        <div class="field-lbl">Кто играл${draft.players.length ? ` · ${draft.players.length}` : ''}</div>
+        ${draft.players.length ? `<div class="list" style="margin:0 0 9px">${draft.players.map((p, i) => `
+          <div class="row" style="gap:8px">
+            <button class="row-ico" data-pf-win="${i}"
+                    style="background:${p.won ? 'var(--accent)' : 'var(--bg-chip)'};font-size:15px">${p.won ? '👑' : '　'}</button>
+            <span class="row-main"><span class="row-title">${esc(p.name)}</span>
+              <span class="row-sub">${p.won ? 'победа' : 'играл'}</span></span>
+            <input type="number" class="pf-score" data-i="${i}" value="${p.score ?? ''}" placeholder="очки"
+                   style="width:76px;flex:0 0 auto;border-radius:10px;border:.5px solid var(--hair);background:var(--bg-elev);padding:7px 9px;outline:none">
+            <button class="row-chev" data-pf-del="${i}" style="opacity:1;color:var(--danger)">✕</button>
+          </div>`).join('')}</div>` : ''}
+
+        <input type="text" id="pf-name" placeholder="Имя и Enter" autocomplete="off">
+        ${suggest.length ? `<div class="chips" style="margin-top:9px">
+          ${suggest.map(n => `<button class="chip" data-pf-add="${esc(n)}">${esc(n)}</button>`).join('')}
+        </div>` : ''}
+        <div class="hint" style="margin:8px 0 0">Корону ставь всем победителям — в кооперативе выигрывают все сразу.</div>
+      </div>
+
+      <div class="field">
+        <div class="field-lbl">Как прошло</div>
+        <textarea id="pf-note" placeholder="Чуть не выиграли на последнем ходу">${esc(draft.note || '')}</textarea>
+      </div>
+
+      <div class="sh-actions">
+        <button class="btn" id="pf-ok">${existing ? 'Сохранить' : 'Записать партию'}</button>
+        ${existing ? `<button class="btn ghost sm" id="pf-del" style="color:var(--danger)">🗑 Удалить партию</button>` : ''}
+      </div>
+    `, body => {
+      // Введённое подхватываем перед любой перерисовкой, иначе пропадёт.
+      const capture = () => {
+        const d = $('#pf-date', body).value;
+        if (d) draft.at = new Date(d + 'T12:00:00').getTime();
+        const m = parseInt($('#pf-min', body).value, 10);
+        draft.minutes = Number.isFinite(m) && m > 0 ? m : null;
+        draft.note = $('#pf-note', body).value.trim();
+        $$('.pf-score', body).forEach(inp => {
+          const v = parseInt(inp.value, 10);
+          draft.players[+inp.dataset.i].score = Number.isFinite(v) ? v : null;
+        });
+      };
+
+      const addPlayer = name => {
+        const n = name.trim();
+        if (!n || draft.players.some(p => p.name === n)) return;
+        capture();
+        draft.players.push({ name: n, score: null, won: false });
+        draw();
+      };
+
+      $('#pf-name', body).addEventListener('keydown', e => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        addPlayer(e.target.value);
+      });
+
+      body.onclick = e => {
+        if (e.target.closest('[data-sh-close]')) { closeSheet(); return; }
+
+        const add = e.target.closest('[data-pf-add]');
+        if (add) { addPlayer(add.dataset.pfAdd); return; }
+
+        const win = e.target.closest('[data-pf-win]');
+        if (win) { capture(); const i = +win.dataset.pfWin; draft.players[i].won = !draft.players[i].won; draw(); return; }
+
+        const del = e.target.closest('[data-pf-del]');
+        if (del) { capture(); draft.players.splice(+del.dataset.pfDel, 1); draw(); return; }
+
+        if (e.target.closest('#pf-ok')) {
+          capture();
+          savePlay(draft);
+          closeSheet(); render();
+          toast(existing ? 'Партия изменена' : 'Партия записана');
+          return;
+        }
+
+        if (e.target.closest('#pf-del')) {
+          if (!confirm('Удалить эту партию?')) return;
+          removePlay(draft.id);
+          closeSheet(); render();
+          toast('Партия удалена', { label: 'Вернуть', fn: undoLast });
+        }
+      };
+    });
+  };
+
+  draw();
 }
 
 /* ============================================================
@@ -2626,7 +3002,7 @@ function openBulk() {
     </div>
     <div class="sh-actions"><button class="btn" id="bk-go">Найти</button></div>
   `, body => {
-    setTimeout(() => $('#bk-in', body).focus(), 250);
+    focusLater($('#bk-in', body));
     $('#bk-go', body).addEventListener('click', () => {
       const names = $('#bk-in', body).value.split('\n').map(s => s.trim()).filter(Boolean);
       if (!names.length) return;
@@ -2871,6 +3247,26 @@ document.addEventListener('click', async e => {
     return;
   }
 
+  // Партии и статистика
+  const pl = t.closest('[data-play]');
+  if (pl) { const p = S.plays.find(x => x.id === pl.dataset.play); if (p) openPlayForm(p.gameId, p); return; }
+
+  const per = t.closest('[data-period]');
+  if (per) { stState.period = per.dataset.period; render(); return; }
+
+  const ss = t.closest('[data-stsort]');
+  if (ss) { stState.sort = ss.dataset.stsort; render(); return; }
+
+  // Своя оценка игры
+  const rate = t.closest('[data-rate]');
+  if (rate) {
+    const g = game(rate.dataset.gid); if (!g) return;
+    const n = +rate.dataset.rate;
+    g.myRating = g.myRating === n ? null : n;   // повторный тап снимает
+    saveGame(g); openGame(g.id); render();
+    return;
+  }
+
   // Настроение в карточке игры
   const vb = t.closest('[data-vibe]');
   if (vb) {
@@ -2946,6 +3342,7 @@ document.addEventListener('click', async e => {
       break;
     }
 
+    case 'add-play': openPlayForm(act.dataset.id); break;
     case 'place-games': openPlaceGames(act.dataset.id); break;
     case 'reparent': openReparent(act.dataset.id); break;
     case 'edit-tags': openEditTags(act.dataset.id); break;

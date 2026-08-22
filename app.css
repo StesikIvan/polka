@@ -362,7 +362,7 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 .field { margin: 0 16px 12px; }
 .field-lbl { font-size: 12.5px; font-weight: 700; color: var(--tx-3); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
 .field input[type=text], .field input[type=number], .field input[type=password],
-.field input[type=search], .field textarea, .field select {
+.field input[type=search], .field input[type=date], .field textarea, .field select {
   width: 100%; border-radius: 12px; border: .5px solid var(--hair);
   background: var(--bg-elev); padding: 11px 13px; outline: none;
   font-size: 16px; transition: border-color .15s;
@@ -466,13 +466,26 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 }
 .qopt:not(:disabled):active .qopt-n { background: var(--accent); color: var(--accent-tx); }
 
+/* ============ Полоска в статистике ============ */
+.bar {
+  display: block; height: 4px; margin-top: 6px;
+  background: var(--bg-sunken); border-radius: 2px; overflow: hidden;
+}
+.bar-fill {
+  display: block; height: 100%;
+  background: var(--accent); border-radius: 2px;
+  transition: width .4s var(--ease);
+}
+
 /* ============ Разное ============ */
 .stat-row { display: flex; gap: 10px; padding: 0 16px; }
 .stat {
   flex: 1; background: var(--bg-elev); border: .5px solid var(--hair);
   border-radius: var(--r); padding: 14px 12px; text-align: center;
 }
-.stat-v { font-size: 25px; font-weight: 800; letter-spacing: -.03em; }
+.stat-v { font-size: 25px; font-weight: 800; letter-spacing: -.03em; white-space: nowrap; }
+/* «3 ч 45 мин» в плитку не влезает — длинные значения мельче */
+.stat-v.long { font-size: 17px; }
 .stat-l { font-size: 11.5px; color: var(--tx-3); margin-top: 2px; }
 
 .hint { font-size: 12.5px; color: var(--tx-3); line-height: 1.45; margin: 8px 16px 0; }
