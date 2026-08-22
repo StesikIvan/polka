@@ -66,7 +66,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 27';
+const BUILD = '2026-08-22 · 28';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -932,10 +932,14 @@ function fromTesera(t) {
 /* ---------- Шторка ---------- */
 const layer = $('#sheet-layer'), sheetBody = $('#sheet-body');
 
-function openSheet(html, onMount) {
+// keepScroll — для шторок, которые перерисовывают сами себя после отметки
+// галочки. Без него список из полусотни коробок выбрасывает в начало на
+// каждом тапе, и отмечать приходится, каждый раз пролистывая заново.
+function openSheet(html, onMount, { keepScroll = false } = {}) {
+  const wasAt = keepScroll ? sheetBody.scrollTop : 0;
   sheetBody.onclick = null;   // сбрасываем делегат предыдущей шторки
   sheetBody.innerHTML = html;
-  sheetBody.scrollTop = 0;
+  sheetBody.scrollTop = wasAt;
   layer.hidden = false;
   // Всегда возвращаем класс: иначе отложенное скрытие после closeSheet
   // успеет стереть только что открытую шторку.
@@ -1033,9 +1037,110 @@ const cState = { q: '', tags: new Set(), sort: 'title', kind: 'game' };
 // поверх экрана. Кнопка в строке поиска перебирает три варианта.
 const SORTS = { title: 'А–Я', recent: 'Новые', rating: 'Рейтинг' };
 
-function collectionList() {
+/* Фильтр коллекции — прямой перебор без опроса.
+   Опрос хорош, когда ты не знаешь, чего хочешь. А когда знаешь —
+   «покажи всё на двоих до часа» — три вопроса только мешают. */
+const cFilter = { players: null, time: null, complexity: null, vibe: null, rating: null, unplayed: false };
+
+const filterActive = () => Object.values(cFilter).filter(v => v !== null && v !== false).length;
+
+function applyFilter(list) {
+  const f = cFilter;
+  if (f.players)    list = list.filter(g => playersFit(g, f.players));
+  if (f.time)       list = list.filter(g => { const t = g.playtimeMax || g.playtimeMin; return t && (f.time === 999 ? t > 120 : t <= f.time); });
+  if (f.complexity !== null) list = list.filter(g => complexityOf(g) === f.complexity);
+  if (f.vibe)       list = list.filter(g => vibesOf(g).includes(f.vibe));
+  if (f.rating)     list = list.filter(g => (g.myRating || 0) >= f.rating);
+  if (f.unplayed)   list = list.filter(g => !playsOf(g.id).length);
+  return list;
+}
+
+function openFilter() {
+  const draw = () => {
+    // На каждом варианте — сколько игр за ним стоит при остальных ответах.
+    const n = patch => applyFilter(collectionBase()).length && applyFilter(
+      collectionBase().filter(() => true)) && (() => {
+        const save = { ...cFilter };
+        Object.assign(cFilter, patch);
+        const c = applyFilter(collectionBase()).length;
+        Object.assign(cFilter, save);
+        return c;
+      })();
+
+    const row = (label, opts) => `
+      <div class="field">
+        <div class="field-lbl">${label}</div>
+        <div class="chips">${opts.map(o => `
+          <button class="chip ${o.on ? 'on' : ''}" data-cf="${o.key}" data-v="${o.v ?? ''}" ${o.n === 0 && !o.on ? 'disabled style="opacity:.35"' : ''}>
+            ${o.label}${o.n !== undefined ? ` <span style="opacity:.6">${o.n}</span>` : ''}
+          </button>`).join('')}</div>
+      </div>`;
+
+    const vibesLive = VIBES.filter(v => n({ vibe: v.id }) > 0 || cFilter.vibe === v.id);
+
+    openSheet(`
+      ${sheetHead('Фильтр')}
+      <div class="hint" style="margin:-4px 16px 12px">Показывать только те, что подходят сразу под всё отмеченное.</div>
+
+      ${row('Играем вдвоём, втроём…', PLAYER_BUCKETS.map(b => ({
+        key: 'players', v: b.v, label: b.label, on: cFilter.players === b.v, n: n({ players: b.v }) })))}
+
+      ${row('Сколько есть времени', [
+        { v: 30,  label: 'до 30′' }, { v: 60, label: 'до часа' },
+        { v: 120, label: 'до 2 ч' }, { v: 999, label: 'дольше' },
+      ].map(o => ({ key: 'time', v: o.v, label: o.label, on: cFilter.time === o.v, n: n({ time: o.v }) })))}
+
+      ${row('Сложность', COMPLEXITY_LABEL.map((l, i) => ({
+        key: 'complexity', v: i, label: l, on: cFilter.complexity === i, n: n({ complexity: i }) })))}
+
+      ${vibesLive.length ? row('Настроение', vibesLive.map(v => ({
+        key: 'vibe', v: v.id, label: `${v.icon} ${v.label}`, on: cFilter.vibe === v.id, n: n({ vibe: v.id }) }))) : ''}
+
+      ${row('Моя оценка', [7, 8, 9].map(r => ({
+        key: 'rating', v: r, label: `${r} и выше`, on: cFilter.rating === r, n: n({ rating: r }) })))}
+
+      ${row('Особое', [{ key: 'unplayed', v: '1', label: 'Ещё не играли', on: cFilter.unplayed, n: n({ unplayed: true }) }])}
+
+      <div class="sh-actions">
+        <button class="btn" data-cf-done>Показать ${applyFilter(collectionBase()).length}</button>
+        ${filterActive() ? `<button class="btn ghost sm" data-cf-clear>Сбросить всё</button>` : ''}
+      </div>
+    `, body => {
+      body.onclick = e => {
+        if (e.target.closest('[data-sh-close]') || e.target.closest('[data-cf-done]')) {
+          closeSheet(); render(); return;
+        }
+        if (e.target.closest('[data-cf-clear]')) {
+          Object.assign(cFilter, { players: null, time: null, complexity: null, vibe: null, rating: null, unplayed: false });
+          draw(); return;
+        }
+        const c = e.target.closest('[data-cf]');
+        if (!c) return;
+        const key = c.dataset.cf;
+        if (key === 'unplayed') cFilter.unplayed = !cFilter.unplayed;
+        else {
+          const v = key === 'complexity' || key === 'rating' || key === 'time' ? +c.dataset.v : c.dataset.v;
+          cFilter[key] = cFilter[key] === v ? null : v;   // повторный тап снимает
+        }
+        draw();
+      };
+    }, { keepScroll: true });
+  };
+  draw();
+}
+
+// Что вообще может показываться при текущей вкладке — до поиска и фильтра.
+// Нужно отдельно, чтобы фильтр считал свои числа от того же основания.
+function collectionBase() {
   // Хотелки живут отдельно и в коллекцию не подмешиваются: список желаемого
   // и полка — разные вещи, и путать их нельзя ни при показе, ни при подборе.
+  let list = S.games.filter(g => cState.kind === 'wish' ? g.wish : !g.wish);
+  if (cState.kind === 'game')  list = list.filter(g => g.kind !== 'thing');
+  if (cState.kind === 'thing') list = list.filter(g => g.kind === 'thing');
+  return list;
+}
+
+function collectionList() {
   let list = S.games.filter(g => cState.kind === 'wish' ? g.wish : !g.wish);
 
   // Тег мог исчезнуть вместе с последней игрой, которая его носила. Кнопки
@@ -1051,6 +1156,7 @@ function collectionList() {
   if (searching && cState.kind !== 'wish') list = S.games.filter(g => !g.wish);
   if (!searching && cState.kind === 'game')  list = list.filter(g => g.kind !== 'thing');
   if (!searching && cState.kind === 'thing') list = list.filter(g => g.kind === 'thing');
+  if (!searching) list = applyFilter(list);   // при поиске фильтр не мешает
 
   if (cState.q.trim()) {
     const q = cState.q.trim().toLowerCase();
@@ -1091,9 +1197,10 @@ function viewCollection() {
     `<a class="hdr-btn" href="#/stats" aria-label="Статистика" title="Статистика">📊</a>
      <button class="hdr-btn" data-act="random-any" aria-label="Случайная игра" title="Случайная игра">🎲</button>`) + `
     <div class="searchbar">
-      <input type="search" id="c-q" placeholder="Название, тег или место" value="${esc(cState.q)}"
+      <input type="search" id="c-q" placeholder="Поиск" value="${esc(cState.q)}"
              autocomplete="off" autocorrect="off" spellcheck="false">
       <button class="sort-btn" data-act="cycle-sort" title="Порядок">${SORTS[cState.sort]}</button>
+      <button class="sort-btn ${filterActive() ? 'on' : ''}" data-act="filter">Фильтр${filterActive() ? ` · ${filterActive()}` : ''}</button>
     </div>
     ${(!cState.q.trim() && (nThings || nWish)) ? `<div class="chips scroll" style="padding-bottom:4px">
       <button class="chip ${cState.kind === 'game' ? 'on' : ''}" data-kindf="game">🎲 Настолки</button>
@@ -1405,11 +1512,22 @@ function viewPick() {
   /* --- Шаг 3: что хотите устроить --- */
   if (quiz.step === 2) {
     const c = v => quizMatches({ vibe: v }).length;
+    // Показываем только то, что при уже данных ответах вообще возможно.
+    // Спрашивать у человека, играющего в одиночку, не хочет ли он пьянку
+    // на пятерых — издевательство, а не вопрос.
+    const live = VIBES.filter(v => c(v.id) > 0);
+
+    if (!live.length) {           // выбирать не из чего — вопрос лишний
+      quiz.vibe = 'any';
+      quiz.step = 3;
+      return viewPick();
+    }
+
     return header('Во что сыграть?', '', null, null, '') + dots(2) + `
       <div class="qback"><button class="back-btn" data-q-back><span class="chev">‹</span>Назад</button></div>
       <div class="qhead">Что хотите устроить?</div>
       <div class="pad">
-        ${VIBES.map(v => qopt('vibe', v.id, v.icon, v.label, v.sub, c(v.id))).join('')}
+        ${live.map(v => qopt('vibe', v.id, v.icon, v.label, v.sub, c(v.id))).join('')}
         ${qopt('vibe', 'any', '🤷', 'Неважно', '', c('any'))}
       </div>`;
   }
@@ -2063,7 +2181,7 @@ function openManualForm(preset = {}) {
         closeSheet(); render();
         toast(`«${draft.title}» добавлена`);
       });
-    });
+    }, { keepScroll: true });
   };
   draw();
 }
@@ -2509,7 +2627,7 @@ function openPlaceGames(placeId) {
           toast(moved ? `Разложено: ${moved}` : 'Ничего не изменилось');
         }
       };
-    });
+    }, { keepScroll: true });
   };
   draw();
 }
@@ -2872,7 +2990,7 @@ function openPlayForm(gameId, existing = null) {
           toast('Партия удалена', { label: 'Вернуть', fn: undoLast });
         }
       };
-    });
+    }, { keepScroll: true });
   };
 
   draw();
@@ -2920,7 +3038,7 @@ function openPlayPicker() {
         const row = e.target.closest('[data-pp]');
         if (row) openPlayForm(row.dataset.pp);
       };
-    });
+    }, { keepScroll: true });
   };
   draw();
 }
@@ -3326,7 +3444,7 @@ async function bulkResolve(names) {
           toast(`Добавлено: ${chosen.size}`);
         }
       };
-    });
+    }, { keepScroll: true });
   };
   draw();
 }
@@ -3622,6 +3740,7 @@ document.addEventListener('click', async e => {
       break;
     }
 
+    case 'filter': openFilter(); break;
     case 'sync-setup': openSyncSetup(); break;
 
     // Своё хранилище — только своим аккаунтом: токен GitHub даёт доступ

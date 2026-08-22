@@ -36,7 +36,7 @@
   --safe-l: env(safe-area-inset-left, 0px);
   --safe-r: env(safe-area-inset-right, 0px);
 
-  --tabbar-h: 56px;
+  --tabbar-h: 49px;   /* как у системных панелей: выше только съедает экран */
   --ease: cubic-bezier(.32,.72,0,1);
   /* Пружина с лёгким перелётом: движение перестаёт быть «выездом по линейке»
      и начинает ощущаться как у системных панелей. */
@@ -143,13 +143,13 @@ input, textarea { -webkit-user-select: text; user-select: text; }
   border-top: .5px solid var(--hair);
 }
 .tb-item {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-  /* 11px — минимальный кегль по гайдлайнам Apple, ниже текст читается плохо */
-  color: var(--tx-3); font-size: 11px; font-weight: 600; letter-spacing: -.02em;
-  height: 100%; min-height: 44px;          /* цель нажатия не меньше 44 точек */
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  /* 10px здесь оправдан: подпись под значком, а не самостоятельный текст */
+  color: var(--tx-3); font-size: 10px; font-weight: 600; letter-spacing: -.02em;
+  height: 100%;
   transition: color .18s;
 }
-.tb-ico { font-size: 21px; line-height: 1; filter: grayscale(1) opacity(.55); transition: filter .18s, transform .18s var(--ease); }
+.tb-ico { font-size: 19px; line-height: 1; filter: grayscale(1) opacity(.55); transition: filter .18s, transform .18s var(--ease); }
 .tb-item.on { color: var(--accent); }
 .tb-item.on .tb-ico { filter: none; transform: translateY(-1px) scale(1.06); }
 /* Красная точка на вкладке, пока синхронизация сломана */
@@ -163,12 +163,12 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 }
 .tb-fab {
   justify-self: center;
-  width: 52px; height: 52px; margin-top: -16px;
+  width: 46px; height: 46px; margin-top: -12px;
   border-radius: 50%;
   background: var(--accent); color: var(--accent-tx);
-  font-size: 26px; font-weight: 300; line-height: 1;
+  font-size: 24px; font-weight: 300; line-height: 1;
   display: grid; place-items: center;
-  box-shadow: 0 6px 18px rgba(0,0,0,.28);
+  box-shadow: 0 4px 16px rgba(0,0,0,.28);
   transition: transform .18s var(--ease);
 }
 .tb-fab:active { transform: scale(.9); }
@@ -216,12 +216,13 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 /* ============ Поиск ============ */
 .searchbar { padding: 8px 16px 8px; display: flex; align-items: center; gap: 8px; }
 .sort-btn {
-  flex: 0 0 auto; height: 40px; padding: 0 12px; border-radius: 12px;
+  flex: 0 0 auto; height: 40px; padding: 0 11px; border-radius: 12px;
   background: var(--bg-chip); border: .5px solid var(--hair);
   color: var(--tx-2); font-size: 13.5px; font-weight: 650; white-space: nowrap;
   transition: transform .15s var(--ease);
 }
 .sort-btn:active { transform: scale(.94); }
+.sort-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-tx); }
 .searchbar input {
   width: 100%; min-width: 0; height: 40px; border: 0; border-radius: 12px;
   background: var(--bg-chip); color: var(--tx);
@@ -389,7 +390,8 @@ input, textarea { -webkit-user-select: text; user-select: text; }
   margin: 8px auto 0; flex: 0 0 auto;
 }
 #sheet-body {
-  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  overflow-y: auto; overflow-x: hidden;   /* шторка не должна ездить вбок */
+  -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   padding-bottom: calc(var(--safe-b) + 16px);
 }
@@ -416,7 +418,14 @@ input, textarea { -webkit-user-select: text; user-select: text; }
   width: 100%; border-radius: 12px; border: .5px solid var(--hair);
   background: var(--bg-elev); padding: 12px 12px; outline: none;
   font-size: 16px; transition: border-color .15s;
+  /* Без этих трёх строк поле даты на iPhone держит свою природную ширину,
+     вылезает за край шторки и заставляет её ездить вбок. */
+  min-width: 0; max-width: 100%;
+  -webkit-appearance: none; appearance: none;
 }
+/* Родное поле даты на iOS центрирует значение — выравниваем как у остальных */
+.field input[type=date] { text-align: left; }
+.field input[type=date]::-webkit-date-and-time-value { text-align: left; }
 .field input:focus, .field textarea:focus { border-color: var(--accent); }
 .field textarea { resize: vertical; min-height: 66px; line-height: 1.45; }
 
@@ -682,6 +691,21 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* Набок телефон повернуть можно — веб-приложение на iOS не умеет это
+   запретить. Но экрана по высоте остаётся мало, поэтому ужимаем всё,
+   что занимает место просто так. */
+@media (max-height: 500px) and (orientation: landscape) {
+  :root { --tabbar-h: 42px; }
+  .hdr { padding-top: calc(var(--safe-t) + 4px); padding-bottom: 4px; }
+  .hdr-title { font-size: 22px; }
+  .hdr-sub { display: none; }
+  .sect-title { margin-top: 12px; }
+  .gd-hero { height: 120px; margin-bottom: -40px; }
+  .gd-cover { width: 84px; height: 84px; }
+  .qhead { font-size: 20px; padding: 8px 16px 12px; }
+  #sheet { max-height: 96%; }
 }
 
 /* Кто-то отключает прозрачность из-за укачивания или слабого зрения.
