@@ -18,26 +18,47 @@ const plural = (n, a, b, c) => {
 };
 const collator = new Intl.Collator('ru');
 
-function toast(msg) {
+function toast(msg, action) {
   const t = $('#toast');
-  t.textContent = msg;
+  t.textContent = '';
+  t.classList.toggle('act', !!action);
+
+  const s = document.createElement('span');
+  s.className = 'toast-msg';
+  s.textContent = msg;
+  t.append(s);
+
+  if (action) {
+    const b = document.createElement('button');
+    b.className = 'toast-act';
+    b.textContent = action.label;
+    b.addEventListener('click', () => { hideToast(); action.fn(); });
+    t.append(b);
+  }
+
   t.hidden = false;
   // Не через requestAnimationFrame: в фоновой вкладке он не срабатывает,
   // и сообщение так и осталось бы прозрачным.
   void t.offsetWidth;
   t.classList.add('in');
+
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => {
-    t.classList.remove('in');
-    setTimeout(() => { t.hidden = true; }, 320);
-  }, 2000);
+  // На отмену нужно время подумать — обычное сообщение столько не висит.
+  toast._t = setTimeout(hideToast, action ? 8000 : 2000);
+}
+
+function hideToast() {
+  const t = $('#toast');
+  clearTimeout(toast._t);
+  t.classList.remove('in');
+  setTimeout(() => { if (!t.classList.contains('in')) t.hidden = true; }, 320);
 }
 
 /* ---------- Хранилище ---------- */
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 11';
+const BUILD = '2026-08-22 · 13';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -351,12 +372,56 @@ function addPlace(parentId, kind, name, icon) {
   return p;
 }
 
+/* ---------- Отмена последнего действия ----------
+   Игры при удалении места не пропадают — теряется только привязка.
+   Но раскладка полки это вечер работы, и снести её одним тапом на всех
+   устройствах сразу слишком легко. Хватает одного шага назад: почти всегда
+   отменяют то, что нажали только что и по ошибке. */
+let undoSnap = null;
+
 function removePlace(id) {
   const ids = new Set(descendantIds(id));
+  const snap = {
+    label: 'Место возвращено',
+    places: S.places.filter(p => ids.has(p.id)).map(p => ({ ...p })),
+    games: [],
+    moved: S.games.filter(g => ids.has(g.placeId)).map(g => ({ id: g.id, placeId: g.placeId })),
+  };
+
   S.games.forEach(g => { if (ids.has(g.placeId)) { g.placeId = null; touch(g); } });
   S.places = S.places.filter(p => !ids.has(p.id));
   ids.forEach(bury);
   save();
+
+  undoSnap = snap;
+  return snap;
+}
+
+function undoLast() {
+  if (!undoSnap) { toast('Отменять нечего'); return; }
+  const { places, games, moved, label } = undoSnap;
+
+  // Надгробие снимаем и ставим свежее время правки: иначе удаление,
+  // уже уехавшее на другие устройства, снесёт возвращённое обратно.
+  // Строго новее надгробия, а не «сейчас»: при равенстве времён побеждает
+  // удаление, а удалить и передумать можно в пределах одной миллисекунды.
+  const revive = (item, list) => {
+    const grave = S.trash[item.id] || 0;
+    delete S.trash[item.id];
+    item.updatedAt = Math.max(now(), grave + 1);
+    if (!list.some(x => x.id === item.id)) list.push(item);
+  };
+  places.forEach(p => revive(p, S.places));
+  games.forEach(g => revive(g, S.games));
+  (moved || []).forEach(({ id, placeId }) => {
+    const g = game(id);
+    if (g) { g.placeId = placeId; g.updatedAt = now() + 1; }
+  });
+
+  undoSnap = null;
+  save();
+  render();
+  toast(label);
 }
 
 /* ---------- Операции с играми ---------- */
@@ -376,9 +441,11 @@ function saveGame(g) {
 }
 
 function removeGame(id) {
-  S.games = S.games.filter(g => g.id !== id);
+  const g = game(id);
+  S.games = S.games.filter(x => x.id !== id);
   bury(id);
   save();
+  undoSnap = { label: 'Возвращено в коллекцию', places: [], games: g ? [{ ...g }] : [], moved: [] };
 }
 
 /* ============================================================
@@ -2104,15 +2171,24 @@ document.addEventListener('click', async e => {
     case 'del-place': {
       const p = place(act.dataset.id); if (!p) break;
       const n = gamesIn(p.id).length;
-      const kids = descendantIds(p.id).length - 1;
-      const warn = [`Удалить «${p.name}»?`];
-      if (kids) warn.push(`Вместе с ним удалится ${kids} ${plural(kids, 'вложенное место', 'вложенных места', 'вложенных мест')}.`);
-      if (n) warn.push(`${n} ${plural(n, 'игра останется', 'игры останутся', 'игр останутся')} без места.`);
+      const inner = descendantIds(p.id).slice(1).map(i => place(i).name);
+
+      const warn = [`Удалить «${p.name}»?`, ''];
+      if (inner.length) {
+        // Названия внятнее числа: «удалится 4 вложенных места» ни о чём
+        // не говорит, а «Верхняя полка, Нижняя полка» — говорит.
+        warn.push('Вместе с ним исчезнут: ' + inner.slice(0, 4).join(', ') +
+          (inner.length > 4 ? ` и ещё ${inner.length - 4}` : '') + '.');
+      }
+      if (n) warn.push(`${n} ${plural(n, 'игра останется', 'игры останутся', 'игр останутся')} в коллекции, но без места.`);
+      warn.push('', 'Сразу после удаления можно будет отменить.');
+
       if (!confirm(warn.join('\n'))) break;
       const back = p.parentId ? `#/place/${p.parentId}` : '#/home';
       removePlace(p.id);
       go(back);
-      toast('Удалено');
+      render();
+      toast('Место удалено', { label: 'Вернуть', fn: undoLast });
       break;
     }
 
@@ -2133,7 +2209,8 @@ document.addEventListener('click', async e => {
     case 'del-game': {
       const g = game(act.dataset.id); if (!g) break;
       if (!confirm(`Удалить «${g.title}» из коллекции?`)) break;
-      removeGame(g.id); closeSheet(); render(); toast('Удалено');
+      removeGame(g.id); closeSheet(); render();
+      toast('Удалено из коллекции', { label: 'Вернуть', fn: undoLast });
       break;
     }
 
