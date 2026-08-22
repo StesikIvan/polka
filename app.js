@@ -58,7 +58,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 18';
+const BUILD = '2026-08-22 · 19';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -475,6 +475,13 @@ function allTags() {
 }
 
 function saveGame(g) {
+  // «От» и «до» легко перепутать в форме правки. Молча меняем местами:
+  // иначе игра с диапазоном 6–2 не нашлась бы вообще ни при каком составе,
+  // и понять причину было бы невозможно.
+  const swap = (a, b) => { if (g[a] && g[b] && g[a] > g[b]) [g[a], g[b]] = [g[b], g[a]]; };
+  swap('playersMin', 'playersMax');
+  swap('playtimeMin', 'playtimeMax');
+
   touch(g);
   const i = S.games.findIndex(x => x.id === g.id);
   if (i >= 0) S.games[i] = g; else S.games.push(g);
@@ -879,6 +886,14 @@ const cState = { q: '', tags: new Set(), sort: 'title', kind: 'game' };
 function collectionList() {
   let list = S.games.slice();
 
+  // Тег мог исчезнуть вместе с последней игрой, которая его носила. Кнопки
+  // такого тега на экране уже нет, а фильтр по нему остался бы включённым —
+  // человек видел бы пустую коллекцию без единой подсказки почему.
+  if (cState.tags.size) {
+    const alive = new Set(allTags());
+    cState.tags.forEach(t => { if (!alive.has(t)) cState.tags.delete(t); });
+  }
+
   // Поиск идёт по всему: набрал «quest» — нашёл очки, даже если открыты настолки.
   const searching = !!cState.q.trim();
   if (!searching && cState.kind === 'game')  list = list.filter(g => g.kind !== 'thing');
@@ -1152,6 +1167,10 @@ function playersFit(g, bucket) {
 }
 
 function quizMatches(over = {}) {
+  if (quiz.tags.size) {
+    const alive = new Set(allTags());
+    quiz.tags.forEach(t => { if (!alive.has(t)) quiz.tags.delete(t); });
+  }
   const a = { ...quiz, ...over };
   // Техника и аксессуары в подборе игры на вечер ни к чему.
   let list = S.games.filter(g => !g.lentTo && g.kind !== 'thing');
@@ -2629,6 +2648,9 @@ async function bulkResolve(names) {
   paint(0);
 
   for (let i = 0; i < names.length; i++) {
+    // Полсотни названий — это сотня запросов подряд. Небольшая пауза,
+    // чтобы не выглядеть для Тесеры перебором.
+    if (i) await new Promise(r => setTimeout(r, 120));
     try {
       const hits = await teseraSearch(names[i]);
       if (!hits.length) { missed.push(names[i]); }
