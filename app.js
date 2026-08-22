@@ -37,7 +37,7 @@ function toast(msg) {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 10';
+const BUILD = '2026-08-22 · 11';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -531,53 +531,6 @@ function fromTesera(t) {
     lentTo: '',
     addedAt: Date.now(),
   };
-}
-
-/* ============================================================
-   СВОИ ФОТОГРАФИИ
-
-   Снимок с телефона весит несколько мегабайт — в localStorage такое
-   не влезет, да и в общее хранилище каждый обмен гонять незачем.
-   Ужимаем до 600 точек по длинной стороне: для карточки хватает с запасом.
-   ============================================================ */
-const PHOTO_MAX = 600;
-const PHOTO_QUALITY = 0.72;
-
-function pickPhoto() {
-  return new Promise(resolve => {
-    const inp = document.createElement('input');
-    inp.type = 'file';
-    inp.accept = 'image/*';
-    inp.onchange = async () => {
-      const f = inp.files && inp.files[0];
-      if (!f) return resolve(null);
-      try { resolve(await shrinkPhoto(f)); }
-      catch (e) { console.error(e); toast('Не получилось прочитать снимок'); resolve(null); }
-    };
-    inp.click();
-  });
-}
-
-function shrinkPhoto(file) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const k = Math.min(1, PHOTO_MAX / Math.max(img.width, img.height));
-      const w = Math.max(1, Math.round(img.width * k));
-      const h = Math.max(1, Math.round(img.height * k));
-      const c = document.createElement('canvas');
-      c.width = w; c.height = h;
-      const ctx = c.getContext('2d');
-      ctx.fillStyle = '#fff';           // под прозрачным PNG иначе будет чернота
-      ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(img, 0, 0, w, h);
-      resolve(c.toDataURL('image/jpeg', PHOTO_QUALITY));
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('bad image')); };
-    img.src = url;
-  });
 }
 
 /* ---------- Шторка ---------- */
@@ -1155,8 +1108,8 @@ function openAddGame() {
     <div class="field">
       <input type="text" id="ag-q" placeholder="Начни вводить название…"
              autocomplete="off" autocorrect="off" spellcheck="false" autofocus>
-      <button class="btn ghost sm" id="ag-manual" style="margin-top:9px">✏️ Своя карточка — с фото и вручную</button>
-      <div class="hint" style="margin:8px 0 0">Для того, чего на Тесере нет: VR-очки, портативки, техника.</div>
+      <button class="btn ghost sm" id="ag-manual" style="margin-top:9px">✏️ Завести карточку вручную</button>
+      <div class="hint" style="margin:8px 0 0">Для того, чего на Тесере нет: VR-очки, портативки, техника, самоделки.</div>
     </div>
     <div id="ag-res" class="sh-pad" style="min-height:120px">
       <div class="hint" style="margin:12px 0">Ищем по базе tesera.ru — можно по-русски или по-английски.</div>
@@ -1224,6 +1177,10 @@ function openAddGame() {
    Для того, чего на Тесере нет и не будет: VR-очки, портативки, техника,
    самоделки, редкие издания. Отдельный вид «другое» нужен, чтобы такие
    карточки не лезли в подбор «что сыграть».
+
+   Своих снимков сознательно нет. Один снимок весит как девяносто карточек,
+   и главное — при каждом обмене улетала бы вся коллекция целиком, включая
+   фотографии. Название, место и заметка решают ту же задачу даром.
    ============================================================ */
 function openManualForm(preset = {}) {
   const draft = {
@@ -1239,12 +1196,7 @@ function openManualForm(preset = {}) {
       ${sheetHead('Своя карточка')}
 
       <div style="text-align:center;padding:2px 16px 14px">
-        ${draft.photoUrl
-          ? `<img class="gd-cover" src="${esc(draft.photoUrl)}" alt="" style="margin:0 auto">`
-          : `<div class="gd-cover gcard-ph" style="display:grid;margin:0 auto">${isGame ? '🎲' : '🎧'}</div>`}
-        <button class="btn ghost sm" id="mf-photo" style="max-width:230px;margin:12px auto 0">
-          ${draft.photoUrl ? '🔄 Заменить фото' : '📷 Сфотографировать'}
-        </button>
+        <div class="gd-cover gcard-ph" style="display:grid;margin:0 auto">${isGame ? '🎲' : '🎧'}</div>
       </div>
 
       <div class="field">
@@ -1319,12 +1271,6 @@ function openManualForm(preset = {}) {
       $$('[data-kind]', body).forEach(b => b.addEventListener('click', () => {
         capture(); draft.kind = b.dataset.kind; draw();
       }));
-
-      $('#mf-photo', body).addEventListener('click', async () => {
-        capture();
-        const data = await pickPhoto();
-        if (data) { draft.photoUrl = data; draw(); }
-      });
 
       $('#mf-place', body).addEventListener('click', () => {
         capture();
