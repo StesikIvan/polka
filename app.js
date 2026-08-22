@@ -58,7 +58,7 @@ function hideToast() {
 const KEY = 'polka.v1';
 // Видно внизу настроек. Нужно, чтобы по скриншоту сразу понимать,
 // свежая версия у человека или браузер отдал старую из кэша.
-const BUILD = '2026-08-22 · 17';
+const BUILD = '2026-08-22 · 18';
 
 const KINDS = {
   room:      { label: 'Комната',  childLabel: 'мебель',  childKind: 'furniture', icon: '🚪' },
@@ -627,6 +627,86 @@ async function teseraGame(alias) {
   return d.game || null;
 }
 
+/* ============================================================
+   ОПЕЧАТКИ
+
+   Тесера опечаток не прощает совсем: «каркасон» с одной «с» — ноль
+   результатов. Зато она хорошо ищет по началу: «карка» находит Каркассон.
+   Поэтому подрезаем запрос с конца, пока что-нибудь не найдётся,
+   и сортируем найденное по близости к тому, что человек набрал.
+   ============================================================ */
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(
+        prev[j] + 1,
+        cur[j - 1] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+// Насколько запрос похож на название: сравниваем и целиком, и по словам,
+// чтобы «гавнь» дотягивалось до «Мрачная гавань».
+function titleDistance(q, title) {
+  const t = normTitle(title);
+  if (!t) return 99;
+  if (t.includes(q)) return 0;
+  return Math.min(levenshtein(q, t), ...t.split(' ').map(w => levenshtein(q, w)));
+}
+
+const typoTolerance = q => Math.max(1, Math.round(q.length * 0.34));
+
+async function teseraSuggest(query) {
+  const q = normTitle(query);
+  if (q.length < 4) return [];
+
+  // Тесера ищет подстрокой по всему запросу, поэтому опечатка в первом слове
+  // убивает поиск целиком: «мрачня гавнь» не найдёт ничего, сколько с конца
+  // ни подрезай. Поэтому пробуем ещё и одно первое слово.
+  const probes = [];
+  for (let cut = 1; cut <= 4 && q.length - cut >= 3; cut++) probes.push(q.slice(0, q.length - cut));
+  const first = q.split(' ')[0];
+  if (first !== q) for (let cut = 0; cut <= 3 && first.length - cut >= 3; cut++) probes.push(first.slice(0, first.length - cut));
+
+  for (const probe of probes) {
+    let hits = [];
+    try { hits = await teseraSearch(probe); }
+    catch { return []; }
+    if (!hits.length) continue;
+
+    const max = typoTolerance(q);
+    return hits
+      .map(h => ({ h, d: Math.min(titleDistance(q, h.title || h.value), titleDistance(q, h.title2)) }))
+      .filter(x => x.d <= max)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 6)
+      .map(x => x.h);
+  }
+  return [];
+}
+
+// То же самое, но по своей коллекции и без сети.
+function fuzzyCollection(query) {
+  const q = normTitle(query);
+  if (q.length < 3) return [];
+  const max = typoTolerance(q);
+  return S.games
+    .map(g => ({ g, d: Math.min(titleDistance(q, g.title), titleDistance(q, g.titleOrig)) }))
+    .filter(x => x.d > 0 && x.d <= max)
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 12)
+    .map(x => x.g);
+}
+
 /* ---------- Дополнения ----------
    Тесера отдаёт их в relateds базовой игры с флагом isAddition. Обратной
    ссылки нет: у самого дополнения relateds пустой, поэтому «к какой игре»
@@ -853,12 +933,15 @@ function viewCollection() {
       ${tags.length ? '<span style="width:6px"></span>' : ''}
       ${tags.map(t => `<button class="chip ${cState.tags.has(t) ? 'on' : ''}" data-tag="${esc(t)}">${esc(t)}</button>`).join('')}
     </div>
-    ${list.length ? gridHtml(list) : `
-      <div class="empty">
-        <div class="empty-ico">🔍</div>
-        <div class="empty-title">Ничего не нашлось</div>
-        <div class="empty-text">Попробуй другой запрос или сбрось фильтры.</div>
-      </div>`}
+    ${list.length ? gridHtml(list) : (() => {
+      const near = cState.q.trim() ? fuzzyCollection(cState.q) : [];
+      return `<div class="empty" style="padding-bottom:16px">
+          <div class="empty-ico">🔍</div>
+          <div class="empty-title">Ничего не нашлось</div>
+          <div class="empty-text">${near.length ? 'Но есть похожие по названию.' : 'Попробуй другой запрос или сбрось фильтры.'}</div>
+        </div>
+        ${near.length ? `<div class="sect-title">Возможно, это</div>${gridHtml(near)}` : ''}`;
+    })()}
   `;
 }
 
@@ -1403,6 +1486,20 @@ async function fillAdditions(g) {
 let searchTimer = null;
 let searchSeq = 0;
 
+// Одна строка выдачи — и для точного поиска, и для подсказок по опечаткам.
+function rowForHit(it) {
+  const have = ownedByAlias(it.alias);
+  return `<button class="row" data-alias="${esc(it.alias)}" ${have ? 'data-have="1"' : ''} style="${have ? 'opacity:.6' : ''}">
+    ${it.photoUrl ? `<img class="row-thumb" src="${esc(it.photoUrl)}" alt="" loading="lazy">`
+                  : `<span class="row-ico" style="width:42px;height:42px">🎲</span>`}
+    <span class="row-main">
+      <span class="row-title">${esc(it.title || it.value)}</span>
+      <span class="row-sub">${have ? '✓ уже в коллекции · ' + esc(whereStr(have)) : esc(it.title2 || '')}</span>
+    </span>
+    <span class="row-chev">${have ? '✓' : '＋'}</span>
+  </button>`;
+}
+
 function openAddGame() {
   openSheet(`
     ${sheetHead('Добавить игру')}
@@ -1434,23 +1531,18 @@ function openAddGame() {
           const items = await teseraSearch(v);
           if (seq !== searchSeq) return;         // ответ на устаревший запрос
           if (!items.length) {
-            res.innerHTML = `<div class="hint" style="margin:12px 0">Ничего не нашлось.</div>
-              <button class="btn ghost sm" data-manual="${esc(v)}">Добавить «${esc(v)}» вручную</button>`;
+            res.innerHTML = `<div class="hint" style="margin:12px 0">Ничего не нашлось. Смотрю похожие…</div>`;
+            const near = await teseraSuggest(v);
+            if (seq !== searchSeq) return;
+            res.innerHTML = near.length
+              ? `<div class="hint" style="margin:12px 0">Точного совпадения нет. Может быть, это:</div>
+                 <div class="list" style="margin:0">${near.map(rowForHit).join('')}</div>
+                 <button class="btn ghost sm" style="margin-top:12px" data-manual="${esc(v)}">Нет, добавить «${esc(v)}» вручную</button>`
+              : `<div class="hint" style="margin:12px 0">Ничего похожего тоже нет.</div>
+                 <button class="btn ghost sm" data-manual="${esc(v)}">Добавить «${esc(v)}» вручную</button>`;
             return;
           }
-          res.innerHTML = `<div class="list" style="margin:0">${items.map(it => {
-            const have = S.games.find(x => (x.alias || '').toLowerCase() === (it.alias || '').toLowerCase());
-            return `
-            <button class="row" data-alias="${esc(it.alias)}" ${have ? 'data-have="1"' : ''} style="${have ? 'opacity:.6' : ''}">
-              ${it.photoUrl ? `<img class="row-thumb" src="${esc(it.photoUrl)}" alt="" loading="lazy">`
-                            : `<span class="row-ico" style="width:42px;height:42px">🎲</span>`}
-              <span class="row-main">
-                <span class="row-title">${esc(it.title || it.value)}</span>
-                <span class="row-sub">${have ? '✓ уже в коллекции · ' + esc(whereStr(have)) : esc(it.title2 || '')}</span>
-              </span>
-              <span class="row-chev">${have ? '✓' : '＋'}</span>
-            </button>`;
-          }).join('')}</div>
+          res.innerHTML = `<div class="list" style="margin:0">${items.map(rowForHit).join('')}</div>
             <button class="btn ghost sm" style="margin-top:12px" data-manual="${esc(v)}">Нет в списке — добавить вручную</button>`;
         } catch (err) {
           console.error(err);
@@ -1625,68 +1717,8 @@ function openManualForm(preset = {}) {
   draw();
 }
 
-/* ============================================================
-   ДОПОЛНЕНИЯ ПРИ ДОБАВЛЕНИИ ИГРЫ
-
-   Сразу после базовой карточки спрашиваем, какие дополнения есть, и заводим
-   их карточки одну за другой. Место подставляем от базовой игры: допы почти
-   всегда лежат рядом, а часто и в той же коробке.
-   ============================================================ */
-async function offerAdditions(base) {
-  if (!base.alias) return;
-
-  let adds = [];
-  try { adds = await getAdditions(base.alias); } catch { return; }
-  const missing = adds.filter(a => !ownedByAlias(a.alias));
-  if (!missing.length) return;
-
-  const chosen = new Set();
-
-  const draw = () => openSheet(`
-    ${sheetHead('Дополнения')}
-    <div class="hint" style="margin:-4px 16px 12px">
-      У «${esc(base.title)}» ${missing.length === adds.length ? 'есть' : 'нашлось ещё'}
-      ${missing.length} ${plural(missing.length, 'дополнение', 'дополнения', 'дополнений')}.
-      Отметь те, что есть у тебя — заведём на них карточки.
-    </div>
-    <div class="list">${missing.map(a => {
-      const on = chosen.has(a.alias);
-      return `<button class="row" data-oa="${esc(a.alias)}" style="${on ? '' : 'opacity:.55'}">
-        ${a.photoUrl ? `<img class="row-thumb" src="${esc(a.photoUrl)}" alt="" loading="lazy">`
-                     : `<span class="row-ico" style="width:42px;height:42px">🧩</span>`}
-        <span class="row-main">
-          <span class="row-title">${esc(a.title)}</span>
-          <span class="row-sub">${a.year || ''}</span>
-        </span>
-        <span class="row-chev" style="${on ? 'color:var(--accent);opacity:1' : ''}">${on ? '✓' : '○'}</span>
-      </button>`;
-    }).join('')}</div>
-    <div class="sh-actions">
-      <button class="btn" data-oa-go ${chosen.size ? '' : 'disabled'}>
-        ${chosen.size ? `Завести ${chosen.size} ${plural(chosen.size, 'карточку', 'карточки', 'карточек')}` : 'Отметь, что есть'}
-      </button>
-      <button class="btn ghost sm" data-sh-close>Ни одного нет</button>
-    </div>
-  `, body => {
-    body.onclick = e => {
-      if (e.target.closest('[data-sh-close]')) { closeSheet(); return; }
-      const row = e.target.closest('[data-oa]');
-      if (row) {
-        const a = row.dataset.oa;
-        chosen.has(a) ? chosen.delete(a) : chosen.add(a);
-        draw();
-        return;
-      }
-      if (e.target.closest('[data-oa-go]') && chosen.size) {
-        addExpansionsInTurn(base, [...chosen]);
-      }
-    };
-  });
-
-  draw();
-}
-
-// Карточки заводятся по очереди: у каждого дополнения своё место и свои теги.
+/* Отмеченные в форме дополнения заводятся по очереди сразу после базовой
+   карточки: у каждого дополнения своё место, свои теги, своя заметка. */
 async function addExpansionsInTurn(base, aliases) {
   for (let i = 0; i < aliases.length; i++) {
     let full;
@@ -1749,6 +1781,8 @@ function openGameForm(g, opts = {}) {
       <textarea id="f-note" placeholder="Например: в глубине, за коробкой с гирляндой">${esc(g.note || '')}</textarea>
     </div>
 
+    <div class="field" id="f-adds"></div>
+
     <div class="sh-actions">
       <button class="btn" id="f-save">Добавить в коллекцию</button>
       ${opts.onDone ? `<button class="btn ghost sm" id="f-skip">Пропустить это дополнение</button>` : ''}
@@ -1759,9 +1793,15 @@ function openGameForm(g, opts = {}) {
     </div>
   `, body => {
     const draft = { ...g, tags: [...(g.tags || [])] };
+    // Переживают перерисовку формы (она случается при выборе места),
+    // потому что лежат прямо на черновике. Перед сохранением снимаются.
+    draft._chosen = draft._chosen || new Set();
+    draft._extra = draft._extra || [];
 
     const skip = $('#f-skip', body);
     if (skip) skip.addEventListener('click', () => opts.onDone('skip'));
+
+    if (!opts.onDone) fillFormAdditions(draft, body);   // у дополнения своих допов не спрашиваем
 
     const paint = () => $$('#f-tags .chip', body).forEach(c => c.classList.toggle('on', draft.tags.includes(c.dataset.t)));
     paint();
@@ -1806,13 +1846,134 @@ function openGameForm(g, opts = {}) {
       capture();
       const dup = findDuplicate(draft);
       if (dup && !confirm(`«${dup.title}» уже есть в коллекции — ${whereStr(dup)}.\nДобавить второй экземпляр?`)) return;
-      saveGame(draft);
+
+      const queue = [...draft._chosen];
+      const clean = { ...draft };
+      delete clean._chosen; delete clean._extra; delete clean._adds;
+
+      saveGame(clean);
       render();
-      toast(`«${draft.title}» добавлена`);
+      toast(`«${clean.title}» добавлена`);
 
       if (opts.onDone) { opts.onDone('saved'); return; }   // очередь дополнений идёт дальше
+      if (queue.length) { addExpansionsInTurn(clean, queue); return; }
       closeSheet();
-      offerAdditions(draft);
+    });
+  });
+}
+
+/* Раздел дополнений прямо в форме: что нашлось на Тесере — отмечаешь
+   галочкой, чего там нет — доищешь вручную. Грузится после показа формы,
+   чтобы сеть не задерживала ввод названия и места. */
+async function fillFormAdditions(draft, body) {
+  const box = $('#f-adds', body);
+  if (!box) return;
+
+  const paint = () => {
+    const list = [...(draft._adds || []), ...draft._extra];
+    box.innerHTML = `
+      <div class="field-lbl">Дополнения${draft._chosen.size ? ` · выбрано ${draft._chosen.size}` : ''}</div>
+      ${list.length ? `<div class="list" style="margin:0 0 9px">${list.map(a => {
+        const on = draft._chosen.has(a.alias);
+        const have = ownedByAlias(a.alias);
+        return `<button class="row" data-fa="${esc(a.alias)}" ${have ? 'disabled' : ''} style="${on || have ? '' : 'opacity:.5'}">
+          ${a.photoUrl ? `<img class="row-thumb" src="${esc(a.photoUrl)}" alt="" loading="lazy">`
+                       : `<span class="row-ico" style="width:42px;height:42px">🧩</span>`}
+          <span class="row-main">
+            <span class="row-title">${esc(a.title)}</span>
+            <span class="row-sub">${have ? 'уже в коллекции' : (a.year || '')}</span>
+          </span>
+          <span class="row-chev" style="${on ? 'color:var(--accent);opacity:1' : ''}">${have ? '✓' : (on ? '✓' : '○')}</span>
+        </button>`;
+      }).join('')}</div>` : `<div class="hint" style="margin:0 0 9px">${draft._adds ? 'На Тесере дополнений не нашлось.' : 'Смотрю дополнения…'}</div>`}
+      <button class="btn ghost sm" data-fa-find>＋ Найти дополнение вручную</button>
+      ${draft._chosen.size ? `<div class="hint" style="margin:8px 0 0">Карточки на отмеченное заведём сразу после этой.</div>` : ''}`;
+  };
+
+  paint();
+
+  box.onclick = e => {
+    const row = e.target.closest('[data-fa]');
+    if (row) {
+      const a = row.dataset.fa;
+      draft._chosen.has(a) ? draft._chosen.delete(a) : draft._chosen.add(a);
+      paint();
+      return;
+    }
+    if (e.target.closest('[data-fa-find]')) {
+      openFindExpansion(draft, hit => {
+        if (!draft._extra.some(x => x.alias === hit.alias) &&
+            !(draft._adds || []).some(x => x.alias === hit.alias)) {
+          draft._extra.push({ alias: hit.alias, title: hit.title || hit.value, photoUrl: hit.photoUrl, year: hit.year });
+        }
+        draft._chosen.add(hit.alias);
+        openGameForm(draft);          // возвращаемся в форму с отмеченным
+      });
+    }
+  };
+
+  if (!draft._adds) {
+    try { draft._adds = (await getAdditions(draft.alias)).filter(a => !ownedByAlias(a.alias)); }
+    catch { draft._adds = []; }
+    if ($('#f-adds')) paint();
+  }
+}
+
+/* Поиск дополнения руками — для того, чего Тесера к игре не привязала. */
+function openFindExpansion(draft, onPick) {
+  let seq = 0, timer = null;
+
+  openSheet(`
+    ${sheetHead('Найти дополнение')}
+    <div class="hint" style="margin:-4px 16px 12px">К игре «${esc(draft.title)}»</div>
+    <div class="field">
+      <input type="text" id="fx-q" placeholder="Название дополнения" value="${esc(draft.title)} "
+             autocomplete="off" autocorrect="off" spellcheck="false">
+    </div>
+    <div id="fx-res" class="sh-pad" style="min-height:100px"></div>
+  `, b => {
+    const q = $('#fx-q', b), res = $('#fx-res', b);
+    setTimeout(() => { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }, 250);
+
+    const run = () => {
+      clearTimeout(timer);
+      const v = q.value.trim();
+      if (v.length < 2) { res.innerHTML = ''; return; }
+      res.innerHTML = '<div class="spin"></div>';
+      const my = ++seq;
+      timer = setTimeout(async () => {
+        try {
+          let hits = await teseraSearch(v);
+          if (!hits.length) hits = await teseraSuggest(v);
+          if (my !== seq) return;
+          res.innerHTML = hits.length
+            ? `<div class="list" style="margin:0">${hits.map(h => `
+                <button class="row" data-fx="${esc(h.alias)}">
+                  ${h.photoUrl ? `<img class="row-thumb" src="${esc(h.photoUrl)}" alt="" loading="lazy">`
+                               : `<span class="row-ico" style="width:42px;height:42px">🧩</span>`}
+                  <span class="row-main">
+                    <span class="row-title">${esc(h.title || h.value)}</span>
+                    <span class="row-sub">${esc(h.title2 || '')}</span>
+                  </span><span class="row-chev">＋</span>
+                </button>`).join('')}</div>`
+            : '<div class="hint" style="margin:12px 0">Ничего не нашлось.</div>';
+        } catch (err) {
+          if (my === seq) res.innerHTML = `<div class="hint" style="margin:12px 0;color:var(--danger)">${esc(err.message)}</div>`;
+        }
+      }, 380);
+    };
+
+    q.addEventListener('input', run);
+    run();
+
+    res.addEventListener('click', e => {
+      const row = e.target.closest('[data-fx]');
+      if (!row) return;
+      const alias = row.dataset.fx;
+      const found = { alias, title: row.querySelector('.row-title').textContent };
+      const img = row.querySelector('img');
+      if (img) found.photoUrl = img.src;
+      onPick(found);
     });
   });
 }
